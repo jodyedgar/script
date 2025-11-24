@@ -376,7 +376,7 @@ main() {
     echo -e "${YELLOW}Next steps:${NC}"
     echo "  1. Review ARCHITECTURE.md"
     echo "  2. Share with team and AI assistants"
-    echo "  3. Update regularly with: ${GREEN}necro arch${NC}"
+    echo -e "  3. Update regularly with: ${GREEN}necro arch${NC}"
     echo ""
 
     # Suggest git add if in repo

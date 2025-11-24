@@ -43,7 +43,7 @@ init_deprecate() {
     # Check if Necro is initialized
     if [[ ! -d "$PROJECT_ROOT/.necro" ]]; then
         log_error "Necro not initialized in this project"
-        echo "Run: ${GREEN}necro init${NC}"
+        echo -e "Run: ${GREEN}necro init${NC}"
         exit 1
     fi
 
@@ -136,7 +136,7 @@ deprecate_file() {
     # Move file
     if mv "$file_abs" "$target_file" 2>/dev/null; then
         log_success "Deprecated: $rel_path"
-        echo "  ${BLUE}→${NC} deprecated/$today/$rel_path"
+        echo -e "  ${BLUE}→${NC} deprecated/$today/$rel_path"
 
         # Log deprecation
         log_deprecation "$rel_path" "deprecated/$today/$rel_path" "$reason" "$replacement"
@@ -314,7 +314,7 @@ mode_clean() {
 mode_log() {
     if [[ ! -f "$LOG_FILE" ]]; then
         log_warning "No deprecation log found"
-        echo "Run ${GREEN}necro deprecate${NC} to deprecate files first"
+        echo -e "Run ${GREEN}necro deprecate${NC} to deprecate files first"
         exit 0
     fi
 

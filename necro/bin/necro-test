@@ -49,7 +49,7 @@ main() {
     local config_file="$project_root/.necro/config.json"
     if [[ ! -f "$config_file" ]]; then
         log_warning "Necro not initialized in this project"
-        echo "Run: ${GREEN}necro init${NC}"
+        echo -e "Run: ${GREEN}necro init${NC}"
         exit 1
     fi
 

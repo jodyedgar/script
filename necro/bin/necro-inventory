@@ -443,7 +443,7 @@ main() {
     echo -e "${YELLOW}Next steps:${NC}"
     echo "  1. Review the inventory file"
     echo "  2. Identify files for deprecation"
-    echo "  3. Run: ${GREEN}necro deprecate${NC}"
+    echo -e "  3. Run: ${GREEN}necro deprecate${NC}"
     echo ""
 }
 

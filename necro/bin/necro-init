@@ -288,10 +288,10 @@ main() {
     log_success "Necro initialized successfully!"
     echo ""
     echo -e "${YELLOW}Next steps:${NC}"
-    echo "  1. Run: ${GREEN}necro inventory${NC}"
+    echo -e "  1. Run: ${GREEN}necro inventory${NC}"
     echo "  2. Review inventory and identify files to deprecate"
-    echo "  3. Run: ${GREEN}necro deprecate${NC}"
-    echo "  4. Update architecture: ${GREEN}necro arch${NC}"
+    echo -e "  3. Run: ${GREEN}necro deprecate${NC}"
+    echo -e "  4. Update architecture: ${GREEN}necro arch${NC}"
     echo ""
 }
 
