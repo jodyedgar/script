@@ -1,0 +1,451 @@
+#!/bin/bash
+# necro-inventory - Generate comprehensive project inventory
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# Configuration
+DAYS_OLD=30
+OUTPUT_FILE=""
+PROJECT_ROOT=""
+
+#######################################
+# Show help
+#######################################
+show_help() {
+    show_help "necro-inventory" \
+        "Generate comprehensive project inventory scan" \
+        "necro inventory [options]" \
+        "--days N           Find files not modified in N days (default: 30)" \
+        "--output FILE      Custom output filename" \
+        "--help             Show this help message"
+}
+
+#######################################
+# Scan directory structure
+#######################################
+scan_structure() {
+    local output="$1"
+
+    echo "## Directory Structure" >> "$output"
+    echo "" >> "$output"
+    echo "\`\`\`" >> "$output"
+
+    if command_exists tree; then
+        tree -L 3 -I 'node_modules|.git|dist|build|deprecated' "$PROJECT_ROOT" >> "$output" 2>/dev/null
+    else
+        echo "Install 'tree' command for better directory visualization" >> "$output"
+        find "$PROJECT_ROOT" -maxdepth 3 -type d \
+            ! -path "*/node_modules/*" \
+            ! -path "*/.git/*" \
+            ! -path "*/dist/*" \
+            ! -path "*/build/*" \
+            ! -path "*/deprecated/*" \
+            2>/dev/null | sort >> "$output"
+    fi
+
+    echo "\`\`\`" >> "$output"
+    echo "" >> "$output"
+}
+
+#######################################
+# Scan markdown files
+#######################################
+scan_markdown() {
+    local output="$1"
+
+    echo "## Documentation Files (.md)" >> "$output"
+    echo "" >> "$output"
+
+    local found=false
+    while IFS= read -r -d '' file; do
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        local size=$(get_file_size "$file")
+        local date=$(get_file_date "$file")
+
+        echo "### $rel_path" >> "$output"
+        echo "- **Size:** $size" >> "$output"
+        echo "- **Modified:** $date" >> "$output"
+
+        # Get first non-empty line as preview
+        local preview=$(grep -v '^[[:space:]]*$' "$file" | head -n 1 | sed 's/^[#[:space:]]*//')
+        if [[ -n "$preview" ]]; then
+            echo "- **Preview:** $preview" >> "$output"
+        fi
+        echo "" >> "$output"
+    done < <(find "$PROJECT_ROOT" -maxdepth 3 -type f -name "*.md" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No markdown files found." >> "$output"
+        echo "" >> "$output"
+    fi
+}
+
+#######################################
+# Scan JavaScript/TypeScript files
+#######################################
+scan_js_files() {
+    local output="$1"
+
+    echo "## JavaScript/TypeScript Files" >> "$output"
+    echo "" >> "$output"
+
+    # Group by directory
+    local dirs=$(find "$PROJECT_ROOT" -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/dist/*" \
+        ! -path "*/build/*" \
+        ! -path "*/deprecated/*" \
+        -exec dirname {} \; 2>/dev/null | sort -u)
+
+    if [[ -z "$dirs" ]]; then
+        echo "No JavaScript/TypeScript files found." >> "$output"
+        echo "" >> "$output"
+        return
+    fi
+
+    while IFS= read -r dir; do
+        local rel_dir="${dir#$PROJECT_ROOT/}"
+        [[ "$rel_dir" == "$PROJECT_ROOT" ]] && rel_dir="."
+
+        echo "### $rel_dir/" >> "$output"
+
+        find "$dir" -maxdepth 1 -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) 2>/dev/null | sort | while read -r file; do
+            local filename=$(basename "$file")
+            local size=$(get_file_size "$file")
+            echo "- \`$filename\` ($size)" >> "$output"
+        done
+        echo "" >> "$output"
+    done <<< "$dirs"
+}
+
+#######################################
+# Scan shell scripts
+#######################################
+scan_scripts() {
+    local output="$1"
+
+    echo "## Shell Scripts (.sh)" >> "$output"
+    echo "" >> "$output"
+
+    local found=false
+    while IFS= read -r -d '' file; do
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        local size=$(get_file_size "$file")
+        local date=$(get_file_date "$file")
+        local executable=""
+
+        if [[ -x "$file" ]]; then
+            executable=" (executable)"
+        fi
+
+        echo "- \`$rel_path\`$executable - $size - Modified: $date" >> "$output"
+    done < <(find "$PROJECT_ROOT" -type f -name "*.sh" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No shell scripts found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Scan PowerShell scripts
+#######################################
+scan_powershell() {
+    local output="$1"
+
+    echo "## PowerShell Scripts (.ps1)" >> "$output"
+    echo "" >> "$output"
+
+    local found=false
+    while IFS= read -r -d '' file; do
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        local size=$(get_file_size "$file")
+        local date=$(get_file_date "$file")
+
+        echo "- \`$rel_path\` - $size - Modified: $date" >> "$output"
+    done < <(find "$PROJECT_ROOT" -type f -name "*.ps1" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No PowerShell scripts found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Find old files
+#######################################
+scan_old_files() {
+    local output="$1"
+    local days="$2"
+
+    echo "## Files Not Modified in $days+ Days" >> "$output"
+    echo "" >> "$output"
+
+    local cutoff_date
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        cutoff_date=$(date -v-"${days}d" '+%s')
+    else
+        cutoff_date=$(date -d "$days days ago" '+%s')
+    fi
+
+    local found=false
+    find "$PROJECT_ROOT" -type f \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/dist/*" \
+        ! -path "*/build/*" \
+        ! -path "*/deprecated/*" \
+        ! -name "package-lock.json" \
+        2>/dev/null | while read -r file; do
+
+        local file_date
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            file_date=$(stat -f "%m" "$file" 2>/dev/null)
+        else
+            file_date=$(stat -c "%Y" "$file" 2>/dev/null)
+        fi
+
+        if [[ -n "$file_date" ]] && [[ "$file_date" -lt "$cutoff_date" ]]; then
+            found=true
+            local rel_path="${file#$PROJECT_ROOT/}"
+            local date=$(get_file_date "$file")
+            echo "- \`$rel_path\` - Last modified: $date" >> "$output"
+        fi
+    done
+
+    if [[ "$found" == false ]]; then
+        echo "No files found older than $days days." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Find suspicious filenames
+#######################################
+scan_suspicious() {
+    local output="$1"
+
+    echo "## Suspicious Filenames" >> "$output"
+    echo "" >> "$output"
+    echo "Files with patterns suggesting they might be outdated:" >> "$output"
+    echo "" >> "$output"
+
+    local patterns=("*-old.*" "*-backup.*" "*.bak" "*-copy.*" "*-test.*" "*-tmp.*" "*~")
+    local found=false
+
+    for pattern in "${patterns[@]}"; do
+        while IFS= read -r -d '' file; do
+            found=true
+            local rel_path="${file#$PROJECT_ROOT/}"
+            local size=$(get_file_size "$file")
+            local date=$(get_file_date "$file")
+            echo "- \`$rel_path\` - $size - Modified: $date" >> "$output"
+        done < <(find "$PROJECT_ROOT" -type f -name "$pattern" \
+            ! -path "*/node_modules/*" \
+            ! -path "*/.git/*" \
+            ! -path "*/deprecated/*" \
+            -print0 2>/dev/null | sort -z)
+    done
+
+    if [[ "$found" == false ]]; then
+        echo "No suspicious filenames found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Scan package.json scripts
+#######################################
+scan_package_scripts() {
+    local output="$1"
+
+    echo "## Package.json Scripts" >> "$output"
+    echo "" >> "$output"
+
+    local package_file="$PROJECT_ROOT/package.json"
+    if [[ -f "$package_file" ]]; then
+        echo "\`\`\`json" >> "$output"
+        if command_exists jq; then
+            jq -r '.scripts // {}' "$package_file" 2>/dev/null >> "$output"
+        else
+            grep -A 20 '"scripts"' "$package_file" | grep -B 20 '^  }' | head -n -1 >> "$output"
+        fi
+        echo "\`\`\`" >> "$output"
+    else
+        echo "No package.json found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Scan git status
+#######################################
+scan_git() {
+    local output="$1"
+
+    echo "## Git Status" >> "$output"
+    echo "" >> "$output"
+
+    if is_git_repo; then
+        local branch=$(get_git_branch)
+        echo "**Branch:** $branch" >> "$output"
+        echo "" >> "$output"
+
+        echo "**Recent Commits:**" >> "$output"
+        echo "\`\`\`" >> "$output"
+        git log --oneline -n 5 2>/dev/null >> "$output"
+        echo "\`\`\`" >> "$output"
+        echo "" >> "$output"
+
+        echo "**Untracked Files:**" >> "$output"
+        local untracked=$(git ls-files --others --exclude-standard 2>/dev/null)
+        if [[ -n "$untracked" ]]; then
+            echo "\`\`\`" >> "$output"
+            echo "$untracked" >> "$output"
+            echo "\`\`\`" >> "$output"
+        else
+            echo "None" >> "$output"
+        fi
+    else
+        echo "Not a git repository." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate inventory
+#######################################
+generate_inventory() {
+    local output="$OUTPUT_FILE"
+
+    # Create header
+    cat > "$output" <<EOF
+# Project Inventory
+
+**Generated:** $(date '+%Y-%m-%d %H:%M:%S')
+**Project:** $PROJECT_ROOT
+
+This inventory provides a comprehensive scan of the project structure, files, and potential areas for cleanup.
+
+---
+
+EOF
+
+    log_info "Scanning directory structure..."
+    scan_structure "$output"
+
+    log_info "Scanning documentation files..."
+    scan_markdown "$output"
+
+    log_info "Scanning JavaScript/TypeScript files..."
+    scan_js_files "$output"
+
+    log_info "Scanning shell scripts..."
+    scan_scripts "$output"
+
+    log_info "Scanning PowerShell scripts..."
+    scan_powershell "$output"
+
+    log_info "Finding old files ($DAYS_OLD+ days)..."
+    scan_old_files "$output" "$DAYS_OLD"
+
+    log_info "Finding suspicious filenames..."
+    scan_suspicious "$output"
+
+    log_info "Scanning package.json scripts..."
+    scan_package_scripts "$output"
+
+    log_info "Checking git status..."
+    scan_git "$output"
+
+    # Footer
+    cat >> "$output" <<EOF
+
+---
+
+## Next Steps
+
+1. Review old and suspicious files for deprecation
+2. Run \`necro deprecate\` to move obsolete files
+3. Run \`necro arch\` to update architecture documentation
+
+EOF
+}
+
+#######################################
+# Main function
+#######################################
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --days)
+                DAYS_OLD="$2"
+                shift 2
+                ;;
+            --output)
+                OUTPUT_FILE="$2"
+                shift 2
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Get project root
+    PROJECT_ROOT="$(get_project_root)"
+
+    # Set default output filename if not specified
+    if [[ -z "$OUTPUT_FILE" ]]; then
+        OUTPUT_FILE="$PROJECT_ROOT/PROJECT_INVENTORY_$(get_timestamp).md"
+    fi
+
+    # Show banner
+    print_banner "NECRO - Project Inventory"
+    echo -e "${BLUE}Project:${NC} $PROJECT_ROOT"
+    echo -e "${BLUE}Output:${NC} $OUTPUT_FILE"
+    echo -e "${BLUE}Old Files Threshold:${NC} $DAYS_OLD days"
+    echo ""
+
+    # Generate inventory
+    generate_inventory
+
+    echo ""
+    log_success "Inventory generated: $OUTPUT_FILE"
+    echo ""
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo "  1. Review the inventory file"
+    echo "  2. Identify files for deprecation"
+    echo "  3. Run: ${GREEN}necro deprecate${NC}"
+    echo ""
+}
+
+# Run main
+main "$@"

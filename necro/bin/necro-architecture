@@ -1,0 +1,390 @@
+#!/bin/bash
+# necro-architecture - Generate/update ARCHITECTURE.md
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# Configuration
+PROJECT_ROOT=""
+OUTPUT_FILE=""
+
+#######################################
+# Show help
+#######################################
+show_help() {
+    show_help "necro-architecture" \
+        "Generate/update ARCHITECTURE.md with current project state" \
+        "necro arch [options]" \
+        "--output FILE      Custom output filename (default: ARCHITECTURE.md)" \
+        "--help             Show this help message"
+}
+
+#######################################
+# Generate project structure section
+#######################################
+generate_structure() {
+    local output="$1"
+
+    echo "## Project Structure" >> "$output"
+    echo "" >> "$output"
+    echo "\`\`\`" >> "$output"
+
+    if command_exists tree; then
+        tree -L 3 -I 'node_modules|.git|dist|build|deprecated' "$PROJECT_ROOT" >> "$output" 2>/dev/null
+    else
+        echo "Directory tree (install 'tree' for better visualization):" >> "$output"
+        find "$PROJECT_ROOT" -maxdepth 3 -type d \
+            ! -path "*/node_modules/*" \
+            ! -path "*/.git/*" \
+            ! -path "*/dist/*" \
+            ! -path "*/build/*" \
+            ! -path "*/deprecated/*" \
+            2>/dev/null | sort >> "$output"
+    fi
+
+    echo "\`\`\`" >> "$output"
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate active directories section
+#######################################
+generate_directories() {
+    local output="$1"
+
+    echo "## Active Source Directories" >> "$output"
+    echo "" >> "$output"
+
+    # Find main source directories
+    local dirs=(
+        "src"
+        "lib"
+        "functions"
+        "api"
+        "components"
+        "pages"
+        "utils"
+        "helpers"
+        "services"
+        "models"
+        "controllers"
+        "routes"
+    )
+
+    local found=false
+    for dir in "${dirs[@]}"; do
+        if [[ -d "$PROJECT_ROOT/$dir" ]]; then
+            found=true
+            echo "### \`$dir/\`" >> "$output"
+
+            # List files in this directory
+            find "$PROJECT_ROOT/$dir" -type f \
+                ! -path "*/node_modules/*" \
+                ! -path "*/.git/*" \
+                2>/dev/null | sort | while read -r file; do
+                local rel_path="${file#$PROJECT_ROOT/$dir/}"
+                local size=$(get_file_size "$file")
+                echo "- \`$rel_path\` ($size)" >> "$output"
+            done
+            echo "" >> "$output"
+        fi
+    done
+
+    if [[ "$found" == false ]]; then
+        echo "No standard source directories found." >> "$output"
+        echo "" >> "$output"
+    fi
+}
+
+#######################################
+# Generate scripts section
+#######################################
+generate_scripts() {
+    local output="$1"
+
+    echo "## Scripts" >> "$output"
+    echo "" >> "$output"
+
+    # Shell scripts
+    echo "### Shell Scripts (.sh)" >> "$output"
+    echo "" >> "$output"
+
+    local found=false
+    while IFS= read -r -d '' file; do
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        local exec_mark=""
+        [[ -x "$file" ]] && exec_mark=" ⚡"
+        echo "- \`$rel_path\`$exec_mark" >> "$output"
+    done < <(find "$PROJECT_ROOT" -maxdepth 3 -type f -name "*.sh" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No shell scripts found." >> "$output"
+    fi
+    echo "" >> "$output"
+
+    # PowerShell scripts
+    echo "### PowerShell Scripts (.ps1)" >> "$output"
+    echo "" >> "$output"
+
+    found=false
+    while IFS= read -r -d '' file; do
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        echo "- \`$rel_path\`" >> "$output"
+    done < <(find "$PROJECT_ROOT" -maxdepth 3 -type f -name "*.ps1" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No PowerShell scripts found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate documentation section
+#######################################
+generate_documentation() {
+    local output="$1"
+
+    echo "## Documentation" >> "$output"
+    echo "" >> "$output"
+
+    local found=false
+    while IFS= read -r -d '' file; do
+        local filename=$(basename "$file")
+
+        # Skip certain files
+        if [[ "$filename" == "ARCHITECTURE.md" ]] || \
+           [[ "$filename" == "DEPRECATED.md" ]] || \
+           [[ "$filename" == "DEPRECATION_LOG.md" ]]; then
+            continue
+        fi
+
+        found=true
+        local rel_path="${file#$PROJECT_ROOT/}"
+        local size=$(get_file_size "$file")
+
+        # Get first non-empty line as description
+        local desc=$(grep -v '^[[:space:]]*$' "$file" | head -n 1 | sed 's/^[#[:space:]]*//' | cut -c 1-80)
+
+        echo "- \`$rel_path\` ($size)" >> "$output"
+        if [[ -n "$desc" ]]; then
+            echo "  - $desc" >> "$output"
+        fi
+    done < <(find "$PROJECT_ROOT" -maxdepth 2 -type f -name "*.md" \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/deprecated/*" \
+        -print0 2>/dev/null | sort -z)
+
+    if [[ "$found" == false ]]; then
+        echo "No documentation files found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate package.json section
+#######################################
+generate_package_scripts() {
+    local output="$1"
+
+    echo "## Package.json Scripts" >> "$output"
+    echo "" >> "$output"
+
+    local package_file="$PROJECT_ROOT/package.json"
+    if [[ -f "$package_file" ]]; then
+        if command_exists jq; then
+            local scripts=$(jq -r '.scripts // {} | to_entries | .[] | "- `\(.key)`: \(.value)"' "$package_file" 2>/dev/null)
+            if [[ -n "$scripts" ]]; then
+                echo "$scripts" >> "$output"
+            else
+                echo "No scripts defined." >> "$output"
+            fi
+        else
+            echo "\`\`\`json" >> "$output"
+            grep -A 20 '"scripts"' "$package_file" 2>/dev/null | grep -B 20 '^  }' | head -n -1 >> "$output"
+            echo "\`\`\`" >> "$output"
+        fi
+    else
+        echo "No package.json found." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate git information section
+#######################################
+generate_git_info() {
+    local output="$1"
+
+    echo "## Git Information" >> "$output"
+    echo "" >> "$output"
+
+    if is_git_repo; then
+        local branch=$(get_git_branch)
+        echo "**Current Branch:** \`$branch\`" >> "$output"
+        echo "" >> "$output"
+
+        echo "**Recent Commits:**" >> "$output"
+        echo "\`\`\`" >> "$output"
+        git log --oneline -n 5 2>/dev/null >> "$output"
+        echo "\`\`\`" >> "$output"
+    else
+        echo "Not a git repository." >> "$output"
+    fi
+    echo "" >> "$output"
+}
+
+#######################################
+# Generate ARCHITECTURE.md
+#######################################
+generate_architecture() {
+    local output="$OUTPUT_FILE"
+
+    # Create header
+    cat > "$output" <<EOF
+# Architecture - Current Active Files
+
+**Last Updated:** $(date '+%Y-%m-%d %H:%M:%S')
+
+> ⚠️ **IMPORTANT for AI Assistants and Developers**
+>
+> **Only reference files listed in this document.**
+>
+> Files in \`/deprecated/\` are obsolete and should be **completely ignored**.
+> They exist only for historical reference and will be deleted after 30 days.
+
+---
+
+EOF
+
+    log_info "Generating project structure..."
+    generate_structure "$output"
+
+    log_info "Scanning active directories..."
+    generate_directories "$output"
+
+    log_info "Scanning scripts..."
+    generate_scripts "$output"
+
+    log_info "Scanning documentation..."
+    generate_documentation "$output"
+
+    log_info "Scanning package.json..."
+    generate_package_scripts "$output"
+
+    log_info "Gathering git information..."
+    generate_git_info "$output"
+
+    # Add deprecated section
+    cat >> "$output" <<EOF
+---
+
+## ⛔ DO NOT USE - Deprecated Files
+
+**All files in \`/deprecated/\` are obsolete and must not be referenced.**
+
+The deprecated directory contains old code that has been replaced or is no longer used.
+These files are kept temporarily (30 days) for historical reference only.
+
+**For replacement information:** Check \`deprecated/DEPRECATION_LOG.md\`
+
+---
+
+## Using This Document
+
+### For Developers
+
+This document should be consulted:
+- Before starting new development work
+- When debugging existing features
+- During code reviews
+- When refactoring code
+
+### For AI Coding Assistants
+
+When working with this project:
+1. **Only reference files listed in this document**
+2. **Completely ignore \`/deprecated/\` directory**
+3. **Check this document for current implementations**
+4. **Ask for clarification if a file isn't listed**
+
+### Keeping Current
+
+Run \`necro arch\` to regenerate this document with the latest project state.
+
+**Recommended:** Update before major work sessions and after significant changes.
+
+EOF
+}
+
+#######################################
+# Main function
+#######################################
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output)
+                OUTPUT_FILE="$2"
+                shift 2
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Get project root
+    PROJECT_ROOT="$(get_project_root)"
+
+    # Set default output if not specified
+    if [[ -z "$OUTPUT_FILE" ]]; then
+        OUTPUT_FILE="$PROJECT_ROOT/ARCHITECTURE.md"
+    fi
+
+    # Show banner
+    print_banner "NECRO - Architecture Documentation"
+    echo -e "${BLUE}Project:${NC} $PROJECT_ROOT"
+    echo -e "${BLUE}Output:${NC} $OUTPUT_FILE"
+    echo ""
+
+    # Generate architecture document
+    generate_architecture
+
+    echo ""
+    log_success "Architecture documentation generated: $OUTPUT_FILE"
+    echo ""
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo "  1. Review ARCHITECTURE.md"
+    echo "  2. Share with team and AI assistants"
+    echo "  3. Update regularly with: ${GREEN}necro arch${NC}"
+    echo ""
+
+    # Suggest git add if in repo
+    if is_git_repo; then
+        echo -e "${CYAN}Tip:${NC} Add to git: ${GREEN}git add $OUTPUT_FILE${NC}"
+        echo ""
+    fi
+}
+
+# Run main
+main "$@"

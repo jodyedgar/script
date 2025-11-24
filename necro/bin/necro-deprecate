@@ -1,0 +1,407 @@
+#!/bin/bash
+# necro-deprecate - Manage file deprecation
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# Configuration
+PROJECT_ROOT=""
+DEPRECATED_DIR=""
+LOG_FILE=""
+CLEAN_DAYS=30
+
+#######################################
+# Show help
+#######################################
+show_help() {
+    show_help "necro-deprecate" \
+        "Manage file deprecation with dated archive structure" \
+        "necro deprecate [mode] [options]" \
+        "Modes:" \
+        "  (none)                   Interactive deprecation" \
+        "  interactive              Interactive deprecation" \
+        "  <file> [reason] [repl]   Deprecate single file" \
+        "  batch <list> [reason]    Batch deprecate from file list" \
+        "  clean [--days N]         Remove old deprecated files (default: 30 days)" \
+        "  log                      Show deprecation log" \
+        "" \
+        "Options:" \
+        "  --days N                 Days to keep for clean mode" \
+        "  --help                   Show this help message"
+}
+
+#######################################
+# Initialize deprecation system
+#######################################
+init_deprecate() {
+    PROJECT_ROOT="$(get_project_root)"
+    DEPRECATED_DIR="$PROJECT_ROOT/deprecated"
+    LOG_FILE="$DEPRECATED_DIR/DEPRECATION_LOG.md"
+
+    # Check if Necro is initialized
+    if [[ ! -d "$PROJECT_ROOT/.necro" ]]; then
+        log_error "Necro not initialized in this project"
+        echo "Run: ${GREEN}necro init${NC}"
+        exit 1
+    fi
+
+    # Ensure deprecated directory exists
+    ensure_dir "$DEPRECATED_DIR"
+}
+
+#######################################
+# Log deprecation to DEPRECATION_LOG.md
+#######################################
+log_deprecation() {
+    local original_path="$1"
+    local new_location="$2"
+    local reason="$3"
+    local replacement="$4"
+    local today=$(get_date)
+    local delete_after=$(get_date_future 30)
+
+    # Create log file if it doesn't exist
+    if [[ ! -f "$LOG_FILE" ]]; then
+        cat > "$LOG_FILE" <<EOF
+# Deprecation Log
+
+This file tracks all deprecated files and their replacements.
+
+Files are moved to \`deprecated/YYYY-MM-DD/\` with their original directory structure preserved.
+
+**Retention Policy:** Files older than 30 days can be permanently deleted.
+
+---
+
+## Log Entries
+
+EOF
+    fi
+
+    # Append entry
+    cat >> "$LOG_FILE" <<EOF
+
+### $(date '+%Y-%m-%d %H:%M:%S') - $original_path
+
+- **Original Path:** \`$original_path\`
+- **New Location:** \`$new_location\`
+- **Reason:** ${reason:-"No reason provided"}
+- **Replacement:** ${replacement:-"None"}
+- **Can Delete After:** $delete_after
+
+EOF
+}
+
+#######################################
+# Deprecate a single file
+#######################################
+deprecate_file() {
+    local file="$1"
+    local reason="$2"
+    local replacement="$3"
+    local today=$(get_date)
+
+    # Validate file exists
+    if [[ ! -e "$file" ]]; then
+        log_error "File not found: $file"
+        return 1
+    fi
+
+    # Get absolute path
+    if [[ "$file" = /* ]]; then
+        file_abs="$file"
+    else
+        file_abs="$(cd "$(dirname "$file")" 2>/dev/null && pwd)/$(basename "$file")"
+    fi
+
+    # Get relative path from project root
+    local rel_path="${file_abs#$PROJECT_ROOT/}"
+
+    # Don't deprecate files already in deprecated/
+    if [[ "$rel_path" == deprecated/* ]]; then
+        log_error "File is already in deprecated directory"
+        return 1
+    fi
+
+    # Create dated directory with original structure
+    local dated_dir="$DEPRECATED_DIR/$today"
+    local target_dir="$dated_dir/$(dirname "$rel_path")"
+    local target_file="$dated_dir/$rel_path"
+
+    # Ensure target directory exists
+    ensure_dir "$target_dir"
+
+    # Move file
+    if mv "$file_abs" "$target_file" 2>/dev/null; then
+        log_success "Deprecated: $rel_path"
+        echo "  ${BLUE}→${NC} deprecated/$today/$rel_path"
+
+        # Log deprecation
+        log_deprecation "$rel_path" "deprecated/$today/$rel_path" "$reason" "$replacement"
+
+        return 0
+    else
+        log_error "Failed to move file: $file"
+        return 1
+    fi
+}
+
+#######################################
+# Interactive deprecation mode
+#######################################
+mode_interactive() {
+    print_banner "NECRO - Interactive Deprecation"
+
+    local count=0
+
+    while true; do
+        echo ""
+        echo -ne "${YELLOW}Enter file path to deprecate (or 'done' to finish):${NC} "
+        read -r file_path
+
+        # Check if done
+        if [[ "$file_path" == "done" ]] || [[ -z "$file_path" ]]; then
+            break
+        fi
+
+        # Prompt for reason
+        echo -ne "${YELLOW}Reason for deprecation:${NC} "
+        read -r reason
+
+        # Prompt for replacement
+        echo -ne "${YELLOW}Replacement file path (press Enter if none):${NC} "
+        read -r replacement
+
+        # Deprecate file
+        if deprecate_file "$file_path" "$reason" "$replacement"; then
+            ((count++))
+        fi
+    done
+
+    echo ""
+    log_success "Deprecation complete!"
+    echo "   Deprecated: $count file(s)"
+    echo "   Log: $LOG_FILE"
+    echo ""
+}
+
+#######################################
+# Single file deprecation mode
+#######################################
+mode_single() {
+    local file="$1"
+    local reason="$2"
+    local replacement="$3"
+
+    if [[ -z "$file" ]]; then
+        log_error "File path required"
+        echo "Usage: necro deprecate <file> [reason] [replacement]"
+        exit 1
+    fi
+
+    deprecate_file "$file" "$reason" "$replacement"
+
+    echo ""
+    log_success "File deprecated successfully"
+    echo "   Log: $LOG_FILE"
+    echo ""
+}
+
+#######################################
+# Batch deprecation mode
+#######################################
+mode_batch() {
+    local list_file="$1"
+    local reason="$2"
+
+    if [[ -z "$list_file" ]]; then
+        log_error "File list required"
+        echo "Usage: necro deprecate batch <file-list> [reason]"
+        exit 1
+    fi
+
+    if ! validate_file "$list_file"; then
+        exit 1
+    fi
+
+    print_banner "NECRO - Batch Deprecation"
+
+    echo -e "${BLUE}Reading from:${NC} $list_file"
+    echo ""
+
+    local count=0
+    local failed=0
+
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" ]] && continue
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+        if deprecate_file "$line" "$reason" ""; then
+            ((count++))
+        else
+            ((failed++))
+        fi
+    done < "$list_file"
+
+    echo ""
+    log_success "Batch deprecation complete!"
+    echo "   Deprecated: $count file(s)"
+    if [[ $failed -gt 0 ]]; then
+        log_warning "Failed: $failed file(s)"
+    fi
+    echo "   Log: $LOG_FILE"
+    echo ""
+}
+
+#######################################
+# Clean old deprecated files
+#######################################
+mode_clean() {
+    local days="$CLEAN_DAYS"
+
+    print_banner "NECRO - Clean Old Deprecated Files"
+
+    echo -e "${BLUE}Removing files deprecated more than $days days ago${NC}"
+    echo ""
+
+    if [[ ! -d "$DEPRECATED_DIR" ]]; then
+        log_info "No deprecated directory found"
+        exit 0
+    fi
+
+    # Find dated directories
+    local cutoff_date=$(get_date_ago "$days")
+    local removed=0
+
+    while IFS= read -r -d '' dir; do
+        local dir_name=$(basename "$dir")
+
+        # Check if it's a date directory (YYYY-MM-DD format)
+        if [[ "$dir_name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            # Compare dates
+            if [[ "$dir_name" < "$cutoff_date" ]]; then
+                echo -e "${YELLOW}Found old directory:${NC} $dir_name"
+
+                if confirm "Delete this directory?" "n"; then
+                    if rm -rf "$dir"; then
+                        log_success "Removed: $dir_name"
+                        ((removed++))
+                    else
+                        log_error "Failed to remove: $dir_name"
+                    fi
+                else
+                    log_info "Skipped: $dir_name"
+                fi
+                echo ""
+            fi
+        fi
+    done < <(find "$DEPRECATED_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+
+    if [[ $removed -eq 0 ]]; then
+        log_info "No directories older than $days days found"
+    else
+        log_success "Cleaned $removed director(y|ies)"
+    fi
+    echo ""
+}
+
+#######################################
+# Show deprecation log
+#######################################
+mode_log() {
+    if [[ ! -f "$LOG_FILE" ]]; then
+        log_warning "No deprecation log found"
+        echo "Run ${GREEN}necro deprecate${NC} to deprecate files first"
+        exit 0
+    fi
+
+    print_banner "NECRO - Deprecation Log"
+    echo ""
+
+    # Use less if available, otherwise cat
+    if command_exists less; then
+        less "$LOG_FILE"
+    else
+        cat "$LOG_FILE"
+    fi
+}
+
+#######################################
+# Main function
+#######################################
+main() {
+    # Parse mode
+    local mode="${1:-interactive}"
+
+    # Handle help
+    if [[ "$mode" == "--help" ]] || [[ "$mode" == "-h" ]]; then
+        show_help
+        exit 0
+    fi
+
+    # Initialize
+    init_deprecate
+
+    # Route to appropriate mode
+    case "$mode" in
+        interactive)
+            shift
+            mode_interactive "$@"
+            ;;
+        batch)
+            shift
+            # Parse --days if present
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --days)
+                        CLEAN_DAYS="$2"
+                        shift 2
+                        ;;
+                    *)
+                        break
+                        ;;
+                esac
+            done
+            mode_batch "$@"
+            ;;
+        clean)
+            shift
+            # Parse --days if present
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --days)
+                        CLEAN_DAYS="$2"
+                        shift 2
+                        ;;
+                    *)
+                        log_error "Unknown option: $1"
+                        exit 1
+                        ;;
+                esac
+            done
+            mode_clean
+            ;;
+        log)
+            mode_log
+            ;;
+        *)
+            # Single file mode or interactive
+            if [[ -e "$mode" ]] || [[ "$mode" == */* ]]; then
+                # Looks like a file path
+                mode_single "$@"
+            else
+                # Unknown mode
+                log_error "Unknown mode: $mode"
+                echo ""
+                show_help
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+# Run main
+main "$@"

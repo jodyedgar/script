@@ -1,0 +1,61 @@
+# Architecture - Current Active Files
+
+**Last Updated:** {DATE}
+
+> ⚠️ **IMPORTANT for AI Assistants and Developers**
+>
+> **Only reference files listed in this document.**
+>
+> Files in `/deprecated/` are obsolete and should be **completely ignored**.
+> They exist only for historical reference and will be deleted after 30 days.
+
+---
+
+## Project Structure
+
+```
+{STRUCTURE}
+```
+
+## Active Files
+
+{FILES}
+
+Run `necro arch` to generate a complete list of active files.
+
+---
+
+## ⛔ DO NOT USE - Deprecated Files
+
+**All files in `/deprecated/` are obsolete and must not be referenced.**
+
+The deprecated directory contains old code that has been replaced or is no longer used.
+These files are kept temporarily (30 days) for historical reference only.
+
+**For replacement information:** Check `deprecated/DEPRECATION_LOG.md`
+
+---
+
+## Using This Document
+
+### For Developers
+
+This document should be consulted:
+- Before starting new development work
+- When debugging existing features
+- During code reviews
+- When refactoring code
+
+### For AI Coding Assistants
+
+When working with this project:
+1. **Only reference files listed in this document**
+2. **Completely ignore `/deprecated/` directory**
+3. **Check this document for current implementations**
+4. **Ask for clarification if a file isn't listed**
+
+### Keeping Current
+
+Run `necro arch` to regenerate this document with the latest project state.
+
+**Recommended:** Update before major work sessions and after significant changes.

@@ -1,0 +1,121 @@
+# Project Restart Guide
+
+This file contains instructions for restarting development work on this project.
+
+---
+
+## Necro Cleanup System
+
+This project uses **Necro** for managing technical debt and deprecated files.
+
+### Before Starting Development or Debugging
+
+1. **Update Architecture Documentation**
+   ```bash
+   necro arch
+   ```
+   This generates/updates `ARCHITECTURE.md` with current active files.
+
+2. **Load ARCHITECTURE.md into Claude/AI Assistant**
+   - Open `ARCHITECTURE.md` in your AI coding tool
+   - Tell the AI: "Only reference files in ARCHITECTURE.md, ignore /deprecated/"
+
+3. **Review Recent Changes**
+   - Check `deprecated/DEPRECATION_LOG.md` for recently deprecated files
+   - Ensure you're working with current implementations
+
+### Weekly Maintenance (Recommended: Fridays)
+
+Run these commands to keep the project clean:
+
+```bash
+# 1. Generate inventory to identify cleanup candidates
+necro inventory
+
+# 2. Review inventory and deprecate zombie files
+necro deprecate
+
+# 3. Remove old deprecated files (30+ days)
+necro deprecate clean --days 30
+
+# 4. Update architecture documentation
+necro arch
+```
+
+### Quick Command Reference
+
+```bash
+necro init          # Initialize Necro (one-time setup)
+necro inventory     # Scan project for files and potential issues
+necro deprecate     # Interactive file deprecation
+necro arch          # Update architecture documentation
+necro help          # Show all available commands
+```
+
+### Working with AI Assistants
+
+To prevent AI tools from referencing deprecated code:
+
+1. **Always load ARCHITECTURE.md first**
+2. **Explicitly instruct**: "Ignore all files in /deprecated/ directory"
+3. **Update regularly**: Run `necro arch` before major work sessions
+4. **Share context**: Tell the AI about recent deprecations
+
+### Deprecated Files
+
+Files in `/deprecated/` are kept for 30 days before permanent deletion.
+
+- **Location**: `deprecated/YYYY-MM-DD/original/path/`
+- **Log**: `deprecated/DEPRECATION_LOG.md`
+- **Policy**: Do not reference or restore these files without review
+
+---
+
+## Project-Specific Setup
+
+Add your project-specific restart instructions below:
+
+### Environment Setup
+
+```bash
+# Add your environment setup commands
+npm install
+cp .env.example .env
+# etc.
+```
+
+### Database Setup
+
+```bash
+# Add your database setup commands
+# etc.
+```
+
+### Running the Project
+
+```bash
+# Add your run commands
+npm run dev
+# etc.
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Issue**: AI assistant references deprecated files
+   - **Solution**: Load ARCHITECTURE.md and explicitly instruct to ignore /deprecated/
+
+2. **Issue**: Can't find current implementation
+   - **Solution**: Check DEPRECATION_LOG.md for replacement information
+
+3. **Issue**: Project structure unclear
+   - **Solution**: Run `necro inventory` for comprehensive project scan
+
+---
+
+**Last Updated**: {DATE}
+
+**Maintained by**: [Your Name/Team]

@@ -1,0 +1,42 @@
+# Deprecated Files
+
+This file provides a high-level overview of deprecated components and features.
+
+For detailed deprecation information, see `DEPRECATION_LOG.md`.
+
+---
+
+## YYYY-MM-DD - [Feature/Component Name]
+
+- **Files Deprecated:**
+  - `path/to/file1.js`
+  - `path/to/file2.js`
+  - `path/to/file3.ts`
+
+- **Reason:** Brief explanation of why these files were deprecated
+
+- **Replacement:** Location of new implementation
+  - New files: `path/to/new-implementation/`
+  - Documentation: `docs/new-feature.md`
+
+- **Can Delete After:** YYYY-MM-DD (30 days from deprecation)
+
+---
+
+## Template Usage
+
+Copy the section above for each deprecation batch. Key information to include:
+
+1. **Date and Component Name**: When deprecated and what feature/component
+2. **Files Deprecated**: List all files that were moved to deprecated/
+3. **Reason**: Why were these files deprecated?
+4. **Replacement**: Where is the new implementation?
+5. **Delete After**: When can these files be permanently removed?
+
+---
+
+## Maintenance
+
+- Review this file monthly
+- Delete sections for files that have been permanently removed
+- Keep this file synchronized with `DEPRECATION_LOG.md`

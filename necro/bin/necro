@@ -1,0 +1,107 @@
+#!/bin/bash
+# necro - Main CLI wrapper for Necro project archaeology system
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+#######################################
+# Show usage information
+#######################################
+show_usage() {
+    print_banner "NECRO - Project Archaeology & Cleanup"
+
+    echo -e "${CYAN}Version:${NC} $NECRO_VERSION"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  necro <command> [options]"
+    echo ""
+    echo -e "${YELLOW}Commands:${NC}"
+    echo "  ${GREEN}init${NC}          Initialize Necro in current project"
+    echo "  ${GREEN}inventory${NC}     Generate project inventory scan"
+    echo "  ${GREEN}deprecate${NC}     Manage file deprecation"
+    echo "  ${GREEN}arch${NC}          Generate/update ARCHITECTURE.md"
+    echo "  ${GREEN}test${NC}          Run project tests"
+    echo "  ${GREEN}help${NC}          Show this help message"
+    echo "  ${GREEN}version${NC}       Show version information"
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  necro init                    # Initialize Necro in current project"
+    echo "  necro inventory               # Scan project for files"
+    echo "  necro deprecate old-file.js   # Deprecate a single file"
+    echo "  necro arch                    # Update architecture documentation"
+    echo ""
+    echo -e "${YELLOW}Get Help:${NC}"
+    echo "  necro <command> --help        # Get help for specific command"
+    echo ""
+    echo -e "${CYAN}Documentation:${NC}"
+    echo "  $NECRO_HOME/README.md"
+    echo "  $NECRO_HOME/docs/"
+    echo ""
+}
+
+#######################################
+# Show version information
+#######################################
+show_version() {
+    print_banner "NECRO - Project Archaeology & Cleanup"
+    echo -e "${CYAN}Version:${NC} $NECRO_VERSION"
+    echo -e "${CYAN}Home:${NC} $NECRO_HOME"
+    echo ""
+    echo "Necro helps manage technical debt by:"
+    echo "  • Tracking deprecated files in dated archive"
+    echo "  • Generating project inventory and architecture docs"
+    echo "  • Preventing AI tools from using zombie code"
+    echo ""
+}
+
+#######################################
+# Main command router
+#######################################
+main() {
+    local command="$1"
+    shift
+
+    # Handle no command
+    if [[ -z "$command" ]]; then
+        show_usage
+        exit 0
+    fi
+
+    # Route commands
+    case "$command" in
+        init)
+            "$SCRIPT_DIR/necro-init" "$@"
+            ;;
+        inventory|inv)
+            "$SCRIPT_DIR/necro-inventory" "$@"
+            ;;
+        deprecate|dep)
+            "$SCRIPT_DIR/necro-deprecate" "$@"
+            ;;
+        architecture|arch)
+            "$SCRIPT_DIR/necro-architecture" "$@"
+            ;;
+        test)
+            "$SCRIPT_DIR/necro-test" "$@"
+            ;;
+        help|--help|-h)
+            show_usage
+            exit 0
+            ;;
+        version|--version|-v)
+            show_version
+            exit 0
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            echo ""
+            echo "Run 'necro help' for usage information."
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function
+main "$@"

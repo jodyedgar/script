@@ -1,0 +1,96 @@
+#!/bin/bash
+# necro-test - Run project tests
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+#######################################
+# Show help
+#######################################
+show_help() {
+    show_help "necro-test" \
+        "Run project-specific tests" \
+        "necro test [options]" \
+        "--help             Show this help message"
+}
+
+#######################################
+# Main function
+#######################################
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Get project root
+    local project_root
+    project_root="$(get_project_root)"
+
+    # Show banner
+    print_banner "NECRO - Test Runner"
+    echo -e "${BLUE}Project:${NC} $project_root"
+    echo ""
+
+    # Check for .necro/config.json
+    local config_file="$project_root/.necro/config.json"
+    if [[ ! -f "$config_file" ]]; then
+        log_warning "Necro not initialized in this project"
+        echo "Run: ${GREEN}necro init${NC}"
+        exit 1
+    fi
+
+    # Check for test configuration
+    local test_command=""
+    if command_exists jq && [[ -f "$config_file" ]]; then
+        test_command=$(jq -r '.test_command // ""' "$config_file" 2>/dev/null)
+    fi
+
+    if [[ -z "$test_command" ]]; then
+        log_info "No test command configured"
+        echo ""
+        echo "To configure tests, add to .necro/config.json:"
+        echo ""
+        echo -e "${BLUE}{${NC}"
+        echo -e "  ${BLUE}\"test_command\": \"npm test\"${NC}"
+        echo -e "${BLUE}}${NC}"
+        echo ""
+        echo "Common test commands:"
+        echo "  - npm test"
+        echo "  - npm run test"
+        echo "  - jest"
+        echo "  - pytest"
+        echo "  - go test ./..."
+        echo ""
+        exit 0
+    fi
+
+    # Run test command
+    log_info "Running: $test_command"
+    echo ""
+
+    if eval "$test_command"; then
+        echo ""
+        log_success "Tests passed!"
+    else
+        echo ""
+        log_error "Tests failed!"
+        exit 1
+    fi
+}
+
+# Run main
+main "$@"

@@ -1,0 +1,299 @@
+#!/bin/bash
+# necro-init - Initialize Necro in a project
+# Part of the Necro project archaeology and cleanup system
+
+# Get script directory and source common functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# Configuration
+SKIP_GIT_HOOKS=false
+
+#######################################
+# Show help
+#######################################
+show_help() {
+    show_help "necro-init" \
+        "Initialize Necro in the current project" \
+        "necro init [options]" \
+        "--skip-git-hooks    Don't install git hooks" \
+        "--help              Show this help message"
+}
+
+#######################################
+# Create .necro directory and config
+#######################################
+create_necro_config() {
+    local project_root="$1"
+    local necro_dir="$project_root/.necro"
+
+    ensure_dir "$necro_dir"
+
+    # Create config.json
+    cat > "$necro_dir/config.json" <<EOF
+{
+  "version": "$NECRO_VERSION",
+  "initialized": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "project_root": "$project_root",
+  "deprecated_retention_days": 30,
+  "inventory_settings": {
+    "ignore_dirs": ["node_modules", ".git", "dist", "build", "deprecated", ".necro"],
+    "suspicious_patterns": ["*-old.*", "*-backup.*", "*.bak", "*-copy.*", "*-test.*", "*-tmp.*"]
+  }
+}
+EOF
+
+    log_success "Created .necro/config.json"
+}
+
+#######################################
+# Create deprecated directory structure
+#######################################
+create_deprecated_dir() {
+    local project_root="$1"
+    local deprecated_dir="$project_root/deprecated"
+
+    ensure_dir "$deprecated_dir"
+    log_success "Created deprecated/ directory"
+
+    # Create initial deprecation log
+    local log_file="$deprecated_dir/DEPRECATION_LOG.md"
+    if [[ ! -f "$log_file" ]]; then
+        cat > "$log_file" <<EOF
+# Deprecation Log
+
+This file tracks all deprecated files and their replacements.
+
+Files are moved to \`deprecated/YYYY-MM-DD/\` with their original directory structure preserved.
+
+**Retention Policy:** Files older than 30 days can be permanently deleted.
+
+---
+
+## Log Entries
+
+<!-- New entries will be added below -->
+
+EOF
+        log_success "Created DEPRECATION_LOG.md"
+    else
+        log_warning "DEPRECATION_LOG.md already exists, skipping"
+    fi
+}
+
+#######################################
+# Create ARCHITECTURE.md from template
+#######################################
+create_architecture_doc() {
+    local project_root="$1"
+    local arch_file="$project_root/ARCHITECTURE.md"
+    local template_file="$NECRO_HOME/templates/ARCHITECTURE.md.template"
+
+    if [[ -f "$arch_file" ]]; then
+        if confirm "ARCHITECTURE.md already exists. Overwrite?" "n"; then
+            create_arch_from_template "$project_root" "$arch_file" "$template_file"
+        else
+            log_info "Skipped ARCHITECTURE.md creation"
+        fi
+    else
+        create_arch_from_template "$project_root" "$arch_file" "$template_file"
+    fi
+}
+
+#######################################
+# Helper to create architecture file
+#######################################
+create_arch_from_template() {
+    local project_root="$1"
+    local arch_file="$2"
+    local template_file="$3"
+
+    if [[ -f "$template_file" ]]; then
+        # Use template
+        cp "$template_file" "$arch_file"
+        # Replace placeholders
+        sed -i.bak "s/{DATE}/$(date '+%Y-%m-%d %H:%M:%S')/g" "$arch_file" 2>/dev/null || \
+            sed -i "" "s/{DATE}/$(date '+%Y-%m-%d %H:%M:%S')/g" "$arch_file"
+        rm -f "$arch_file.bak"
+        log_success "Created ARCHITECTURE.md from template"
+    else
+        # Create basic version
+        cat > "$arch_file" <<EOF
+# Architecture - Current Active Files
+
+**Last Updated:** $(date '+%Y-%m-%d %H:%M:%S')
+
+> ⚠️ **Important for AI Assistants**: Only reference files listed in this document.
+> Files in \`/deprecated/\` should be completely ignored.
+
+---
+
+## Project Structure
+
+\`\`\`
+$(tree -L 2 -I 'node_modules|.git|dist|build|deprecated' "$project_root" 2>/dev/null || echo "Run 'necro arch' to generate structure")
+\`\`\`
+
+## Active Files
+
+Run \`necro arch\` to generate a complete list of active files.
+
+---
+
+## ⛔ DO NOT USE - Deprecated
+
+All files in \`/deprecated/\` are obsolete and should NOT be referenced.
+
+Check \`deprecated/DEPRECATION_LOG.md\` for details on replacements.
+
+---
+
+## Usage
+
+This document should be consulted before:
+- Starting new development work
+- Debugging existing features
+- Refactoring code
+- Working with AI coding assistants
+
+**Update this document:** Run \`necro arch\` to regenerate with current project state.
+EOF
+        log_success "Created ARCHITECTURE.md"
+    fi
+}
+
+#######################################
+# Update RESTART.md if it exists
+#######################################
+update_restart_doc() {
+    local project_root="$1"
+    local restart_file="$project_root/RESTART.md"
+
+    if [[ -f "$restart_file" ]]; then
+        # Check if already has Necro section
+        if grep -q "## Necro Cleanup System" "$restart_file" 2>/dev/null; then
+            log_info "RESTART.md already has Necro section"
+        else
+            # Append Necro section
+            cat >> "$restart_file" <<EOF
+
+---
+
+## Necro Cleanup System
+
+**Before starting development or debugging:**
+1. Run \`necro arch\` to update ARCHITECTURE.md
+2. Load ARCHITECTURE.md into Claude/AI tool
+3. Tell AI: "Only reference files in ARCHITECTURE.md, ignore /deprecated/"
+
+**Weekly maintenance (recommended: Fridays):**
+- \`necro inventory\` - Review project state
+- \`necro deprecate\` - Clean up zombie files
+- \`necro deprecate clean\` - Remove old deprecated files (30+ days)
+- \`necro arch\` - Update documentation
+
+**Quick Commands:**
+\`\`\`bash
+necro init          # Initialize Necro (one-time)
+necro inventory     # Scan project
+necro deprecate     # Interactive file deprecation
+necro arch          # Update architecture docs
+\`\`\`
+
+EOF
+            log_success "Updated RESTART.md with Necro section"
+        fi
+    else
+        log_info "No RESTART.md found (this is optional)"
+    fi
+}
+
+#######################################
+# Install git hooks (optional)
+#######################################
+install_git_hooks() {
+    local project_root="$1"
+
+    if [[ "$SKIP_GIT_HOOKS" == true ]]; then
+        log_info "Skipped git hooks installation"
+        return 0
+    fi
+
+    if ! is_git_repo; then
+        log_warning "Not a git repository, skipping hooks"
+        return 0
+    fi
+
+    local hooks_dir="$project_root/.git/hooks"
+    if [[ ! -d "$hooks_dir" ]]; then
+        log_warning "Git hooks directory not found"
+        return 1
+    fi
+
+    # For now, just inform the user
+    log_info "Git hooks can be installed manually (feature coming soon)"
+}
+
+#######################################
+# Main initialization
+#######################################
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skip-git-hooks)
+                SKIP_GIT_HOOKS=true
+                shift
+                ;;
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo ""
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    # Get project root
+    local project_root
+    project_root="$(get_project_root)"
+
+    # Show banner
+    print_banner "NECRO - Initializing Project"
+    echo -e "${BLUE}Project:${NC} $project_root"
+    echo ""
+
+    # Check if already initialized
+    if [[ -d "$project_root/.necro" ]]; then
+        log_warning "Necro already initialized in this project"
+        if ! confirm "Reinitialize?" "n"; then
+            log_info "Initialization cancelled"
+            exit 0
+        fi
+        echo ""
+    fi
+
+    # Create structure
+    create_necro_config "$project_root"
+    create_deprecated_dir "$project_root"
+    create_architecture_doc "$project_root"
+    update_restart_doc "$project_root"
+    install_git_hooks "$project_root"
+
+    echo ""
+    log_success "Necro initialized successfully!"
+    echo ""
+    echo -e "${YELLOW}Next steps:${NC}"
+    echo "  1. Run: ${GREEN}necro inventory${NC}"
+    echo "  2. Review inventory and identify files to deprecate"
+    echo "  3. Run: ${GREEN}necro deprecate${NC}"
+    echo "  4. Update architecture: ${GREEN}necro arch${NC}"
+    echo ""
+}
+
+# Run main
+main "$@"
