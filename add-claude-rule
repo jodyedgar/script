@@ -1,0 +1,152 @@
+#!/bin/bash
+#
+# add-claude-rule - Quick script to add new Claude rule ideas to the inbox
+#
+# Usage:
+#   add-claude-rule "Your new rule here"
+#   add-claude-rule -p "Pattern observed" -r "Proposed rule"
+#   add-claude-rule -e  (opens the inbox in your default editor)
+#
+# Examples:
+#   add-claude-rule "Always check for existing API clients before creating new ones"
+#   add-claude-rule -p "Claude creates duplicate configs" -r "Search for config files before creating"
+#   add-claude-rule -e
+#
+
+INBOX_FILE="$HOME/.claude/rules-inbox.md"
+RULES_FILE="$HOME/.claude/rules.md"
+TIMESTAMP=$(date +"%Y-%m-%d %H:%M")
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to display usage
+show_usage() {
+    echo "Usage: add-claude-rule [OPTIONS] [RULE]"
+    echo ""
+    echo "Options:"
+    echo "  -p PATTERN    Specify the pattern observed"
+    echo "  -r RULE       Specify the proposed rule"
+    echo "  -f FREQUENCY  How often this comes up (default: observed once)"
+    echo "  -e            Edit the inbox file directly"
+    echo "  -v            View the current inbox"
+    echo "  -g            View rules with git log"
+    echo "  -h            Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  add-claude-rule \"Always check package.json before npm install\""
+    echo "  add-claude-rule -p \"Duplicate configs\" -r \"Search before creating\""
+    echo "  add-claude-rule -e"
+}
+
+# Function to add a simple rule
+add_simple_rule() {
+    local rule="$1"
+
+    echo "" >> "$INBOX_FILE"
+    echo "### $TIMESTAMP" >> "$INBOX_FILE"
+    echo "- **Proposed rule**: $rule" >> "$INBOX_FILE"
+    echo "- **Frequency**: Observed once (update as needed)" >> "$INBOX_FILE"
+    echo "- **Status**: Pending review" >> "$INBOX_FILE"
+
+    echo -e "${GREEN}✅ Rule added to inbox!${NC}"
+    echo -e "${BLUE}📝 Review at: $INBOX_FILE${NC}"
+}
+
+# Function to add a detailed rule
+add_detailed_rule() {
+    local pattern="$1"
+    local rule="$2"
+    local frequency="${3:-Observed once}"
+
+    echo "" >> "$INBOX_FILE"
+    echo "### $TIMESTAMP" >> "$INBOX_FILE"
+    echo "- **Pattern observed**: $pattern" >> "$INBOX_FILE"
+    echo "- **Proposed rule**: $rule" >> "$INBOX_FILE"
+    echo "- **Frequency**: $frequency" >> "$INBOX_FILE"
+    echo "- **Status**: Pending review" >> "$INBOX_FILE"
+
+    echo -e "${GREEN}✅ Detailed rule added to inbox!${NC}"
+    echo -e "${BLUE}📝 Review at: $INBOX_FILE${NC}"
+}
+
+# Function to edit the inbox
+edit_inbox() {
+    if [ -n "$EDITOR" ]; then
+        $EDITOR "$INBOX_FILE"
+    elif command -v code &> /dev/null; then
+        code "$INBOX_FILE"
+    elif command -v nano &> /dev/null; then
+        nano "$INBOX_FILE"
+    else
+        open "$INBOX_FILE"
+    fi
+}
+
+# Function to view the inbox
+view_inbox() {
+    if [ -f "$INBOX_FILE" ]; then
+        cat "$INBOX_FILE"
+    else
+        echo -e "${YELLOW}⚠️  No inbox file found at $INBOX_FILE${NC}"
+    fi
+}
+
+# Function to view git log
+view_git_log() {
+    cd "$HOME/.claude" || exit 1
+    if [ -d ".git" ]; then
+        git log --oneline --graph --decorate rules.md rules-inbox.md 2>/dev/null || echo "No commits yet"
+    else
+        echo -e "${YELLOW}⚠️  Git repository not initialized in ~/.claude${NC}"
+    fi
+}
+
+# Parse arguments
+PATTERN=""
+RULE=""
+FREQUENCY=""
+
+while getopts "p:r:f:evgh" opt; do
+    case $opt in
+        p) PATTERN="$OPTARG" ;;
+        r) RULE="$OPTARG" ;;
+        f) FREQUENCY="$OPTARG" ;;
+        e) edit_inbox; exit 0 ;;
+        v) view_inbox; exit 0 ;;
+        g) view_git_log; exit 0 ;;
+        h) show_usage; exit 0 ;;
+        *) show_usage; exit 1 ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+# Handle the different input methods
+if [ -n "$PATTERN" ] && [ -n "$RULE" ]; then
+    # Detailed entry with -p and -r flags
+    add_detailed_rule "$PATTERN" "$RULE" "$FREQUENCY"
+elif [ -n "$1" ]; then
+    # Simple entry with just a rule text
+    add_simple_rule "$*"
+else
+    # No arguments provided
+    echo -e "${YELLOW}⚠️  No rule provided${NC}"
+    echo ""
+    show_usage
+    exit 1
+fi
+
+# Offer to commit to git
+echo ""
+echo -e "${BLUE}💾 Would you like to commit this to git? [y/N]${NC}"
+read -r response
+if [[ "$response" =~ ^[Yy]$ ]]; then
+    cd "$HOME/.claude" || exit 1
+    git add rules-inbox.md
+    git commit -m "📥 Added rule to inbox: $(echo "$RULE$*" | head -c 50)..."
+    echo -e "${GREEN}✅ Committed to git${NC}"
+fi

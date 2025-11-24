@@ -1,0 +1,27 @@
+{
+  "session": {
+    "new": true,
+    "sessionId": "session1234",
+    "attributes": {},
+    "user": {
+      "userId": null
+    },
+    "application": {
+      "applicationId": "amzn1.echo-sdk-ams.app.a14749f2-3865-43cb-a619-a38945a2f4c8"
+    }
+  },
+  "version": "1.0",
+  "request": {
+    "intent": {
+      "slots": {
+        "Preset": {
+          "name": "Preset",
+          "value": "test"
+        }
+      },
+      "name": "PlayIntent"
+    },
+    "type": "IntentRequest",
+    "requestId": "request5678"
+  }
+}
