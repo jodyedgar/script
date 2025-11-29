@@ -1,0 +1,115 @@
+{
+  "version": "1.0.0",
+  "description": "Ticket categorization rules for hs-figma backlog batch processing",
+
+  "categories": {
+    "header-nav": {
+      "name": "Header & Navigation",
+      "files": ["figma-menu.liquid", "header.liquid", "figma-menu-collection-header.liquid"],
+      "keywords": ["header", "nav", "menu", "search", "logo", "announcement", "banner"],
+      "priority_base": 2
+    },
+    "footer": {
+      "name": "Footer",
+      "files": ["figma-footer.liquid", "figma-newsletter-signup.liquid"],
+      "keywords": ["footer", "newsletter", "copyright", "social"],
+      "priority_base": 2
+    },
+    "homepage": {
+      "name": "Homepage Sections",
+      "files": ["figma-hero-section.liquid", "figma-cascade-section.liquid", "figma-crosslink.liquid", "figma-hover-title.liquid"],
+      "keywords": ["homepage", "hero", "cascade", "crosslink", "home page", "landing"],
+      "priority_base": 2
+    },
+    "pdp": {
+      "name": "Product Detail Page",
+      "files": ["main-product.liquid", "figma-product-related.liquid", "product-card.liquid", "card-gallery.liquid"],
+      "keywords": ["pdp", "product", "variant", "size", "add to bag", "add to cart", "sold out", "inventory", "swatch"],
+      "priority_base": 2
+    },
+    "cart": {
+      "name": "Cart & Checkout",
+      "files": ["figma-cart.liquid", "cart-drawer.liquid", "cart-products.liquid", "cart-summary.liquid"],
+      "keywords": ["cart", "bag", "checkout", "discount", "empty bag", "remove"],
+      "priority_base": 2
+    },
+    "collection": {
+      "name": "Collection Pages",
+      "files": ["figma-collection-header.liquid", "figma-section-collection-grid.liquid", "figma-filter.liquid", "collection-list.liquid"],
+      "keywords": ["collection", "filter", "sort", "grid", "shop all", "featured"],
+      "priority_base": 2
+    },
+    "breadcrumb": {
+      "name": "Breadcrumbs",
+      "files": ["breadcrumbs.liquid", "Breadcrumbs.liquid"],
+      "keywords": ["breadcrumb"],
+      "priority_base": 1
+    },
+    "modals": {
+      "name": "Modals & Dropdowns",
+      "files": ["quick-add-modal.liquid", "size-guide.liquid"],
+      "keywords": ["modal", "dropdown", "quick add", "popup", "overlay", "size guide"],
+      "priority_base": 3
+    },
+    "icons-images": {
+      "name": "Icons & Images",
+      "files": ["icon-*.liquid", "cutout-image.liquid"],
+      "keywords": ["icon", "image", "svg", "blurry", "logo", "arrow", "chevron"],
+      "priority_base": 1
+    },
+    "spacing-layout": {
+      "name": "Spacing & Layout",
+      "files": [],
+      "keywords": ["spacing", "padding", "margin", "gap", "width", "height", "position", "align"],
+      "priority_base": 3
+    },
+    "typography": {
+      "name": "Typography",
+      "files": [],
+      "keywords": ["font", "text", "typography", "size", "weight", "condensed"],
+      "priority_base": 3
+    },
+    "pages": {
+      "name": "Static Pages",
+      "files": ["figma-about-text.liquid", "figma-404.liquid", "figma-login.liquid", "figma-register.liquid"],
+      "keywords": ["about", "contact", "policy", "privacy", "terms", "404", "login", "register", "account"],
+      "priority_base": 2
+    },
+    "mobile": {
+      "name": "Mobile & Responsive",
+      "files": [],
+      "keywords": ["mobile", "responsive", "tablet", "viewport", "breakpoint", "touch", "swipe"],
+      "priority_base": 4
+    },
+    "animation": {
+      "name": "Animation & Effects",
+      "files": [],
+      "keywords": ["animation", "hover", "transition", "fade", "flash", "effect"],
+      "priority_base": 3
+    }
+  },
+
+  "priority_rules": {
+    "description": "Priority is calculated as: priority_base + complexity_modifier + type_modifier",
+    "complexity_modifiers": {
+      "Quick Fix": -1,
+      "Small Task": 0,
+      "Medium Task": 1,
+      "Large Task": 2
+    },
+    "priority_labels": {
+      "1": "P1-QuickWins",
+      "2": "P2-Structural",
+      "3": "P3-CrossCutting",
+      "4": "P4-Responsive",
+      "5": "P5-Complex"
+    }
+  },
+
+  "batch_rules": {
+    "max_tickets_per_batch": 15,
+    "group_by": "category",
+    "sort_within_batch": "complexity_asc",
+    "qa_strategy": "batch_review"
+  }
+}

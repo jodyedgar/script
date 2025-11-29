@@ -169,10 +169,166 @@ echo "$PAGE_CONTENT" | jq -r '.results[] |
     "[" + (if .to_do.checked then "x" else " " end) + "] " + (.to_do.rich_text[].plain_text // "")
   elif .type == "code" then
     "\n```\n" + (.code.rich_text[].plain_text // "") + "\n```"
+  elif .type == "image" then
+    "[IMAGE: " + (.image.external.url // .image.file.url // "unknown") + "]"
+  elif .type == "embed" then
+    "[EMBED: " + (.embed.url // "unknown") + "]"
+  elif .type == "bookmark" then
+    "[BOOKMARK: " + (.bookmark.url // "unknown") + "]"
+  elif .type == "link_preview" then
+    "[LINK PREVIEW: " + (.link_preview.url // "unknown") + "]"
+  elif .type == "video" then
+    "[VIDEO: " + (.video.external.url // .video.file.url // "unknown") + "]"
+  elif .type == "file" then
+    "[FILE: " + (.file.external.url // .file.file.url // "unknown") + "]"
+  elif .type == "pdf" then
+    "[PDF: " + (.pdf.external.url // .pdf.file.url // "unknown") + "]"
+  elif .type == "audio" then
+    "[AUDIO: " + (.audio.external.url // .audio.file.url // "unknown") + "]"
+  elif .type == "divider" then
+    "\n---\n"
+  elif .type == "callout" then
+    "💡 " + (.callout.rich_text[].plain_text // "")
+  elif .type == "quote" then
+    "> " + (.quote.rich_text[].plain_text // "")
+  elif .type == "toggle" then
+    "▶ " + (.toggle.rich_text[].plain_text // "")
   else
     ""
   end
 '
+
+# Extract ALL referenced links from the content
+echo ""
+echo "REFERENCED LINKS:"
+echo "----------------------------------------"
+
+# Extract links from various block types
+BLOCK_LINKS=$(echo "$PAGE_CONTENT" | jq -r '
+  .results[] |
+  if .type == "bookmark" then
+    .bookmark.url // empty
+  elif .type == "link_preview" then
+    .link_preview.url // empty
+  elif .type == "embed" then
+    .embed.url // empty
+  elif .type == "video" then
+    .video.external.url // .video.file.url // empty
+  elif .type == "file" then
+    .file.external.url // .file.file.url // empty
+  elif .type == "pdf" then
+    .pdf.external.url // .pdf.file.url // empty
+  else
+    empty
+  end
+' | grep -v '^$' || true)
+
+# Extract inline links from rich_text in all text-containing blocks
+INLINE_LINKS=$(echo "$PAGE_CONTENT" | jq -r '
+  .results[] |
+  (
+    .paragraph.rich_text //
+    .heading_1.rich_text //
+    .heading_2.rich_text //
+    .heading_3.rich_text //
+    .bulleted_list_item.rich_text //
+    .numbered_list_item.rich_text //
+    .to_do.rich_text //
+    .callout.rich_text //
+    .quote.rich_text //
+    .toggle.rich_text //
+    []
+  )[] |
+  select(.text.link != null) |
+  .text.link.url
+' 2>/dev/null | grep -v '^$' || true)
+
+# Combine and deduplicate all links
+ALL_LINKS=$(echo -e "$BLOCK_LINKS\n$INLINE_LINKS" | grep -v '^$' | sort -u || true)
+
+if [ -n "$ALL_LINKS" ]; then
+    echo "$ALL_LINKS" | while read -r link_url; do
+        if [ -n "$link_url" ]; then
+            # Categorize links for easier reading
+            if echo "$link_url" | grep -qi "github.com"; then
+                echo "🔗 [GitHub] $link_url"
+            elif echo "$link_url" | grep -qi "shopify"; then
+                echo "🛍️  [Shopify] $link_url"
+            elif echo "$link_url" | grep -qi "figma.com"; then
+                echo "🎨 [Figma] $link_url"
+            elif echo "$link_url" | grep -qi "notion.so\|notion.site"; then
+                echo "📝 [Notion] $link_url"
+            elif echo "$link_url" | grep -qi "loom.com"; then
+                echo "🎬 [Loom] $link_url"
+            elif echo "$link_url" | grep -qi "youtube.com\|youtu.be"; then
+                echo "📺 [YouTube] $link_url"
+            elif echo "$link_url" | grep -qi "docs.google\|drive.google"; then
+                echo "📄 [Google] $link_url"
+            else
+                echo "🔗 $link_url"
+            fi
+        fi
+    done
+else
+    echo "(No links found)"
+fi
+
+# Extract and display images separately for better visibility
+echo ""
+IMAGES=$(echo "$PAGE_CONTENT" | jq -r '.results[] | select(.type == "image") | .image.external.url // .image.file.url // empty')
+FEEDBUCKET_IMAGES=$(echo "$IMAGES" | grep -i "feedbucket" || true)
+
+if [ -n "$IMAGES" ]; then
+    echo "ATTACHED IMAGES:"
+    echo "----------------------------------------"
+    echo "$IMAGES" | while read -r img_url; do
+        if [ -n "$img_url" ]; then
+            if echo "$img_url" | grep -qi "feedbucket"; then
+                echo "📸 [FEEDBUCKET] $img_url"
+            else
+                echo "🖼️  $img_url"
+            fi
+        fi
+    done
+fi
+
+# Highlight Feedbucket images specifically for Claude Code
+if [ -n "$FEEDBUCKET_IMAGES" ]; then
+    echo ""
+    echo "🎯 FEEDBUCKET SCREENSHOTS (for Claude Code to analyze):"
+    echo "----------------------------------------"
+
+    # Create temp directory for this ticket's images
+    IMG_DIR="/tmp/notion-$TICKET_ID-images"
+    mkdir -p "$IMG_DIR"
+
+    IMG_COUNT=0
+    echo "$FEEDBUCKET_IMAGES" | while read -r fb_url; do
+        if [ -n "$fb_url" ]; then
+            IMG_COUNT=$((IMG_COUNT + 1))
+            # Extract filename from URL or generate one
+            FILENAME=$(basename "$fb_url" | cut -d'?' -f1)
+            if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+                FILENAME="screenshot_$IMG_COUNT.png"
+            fi
+            IMG_PATH="$IMG_DIR/$FILENAME"
+
+            echo "Downloading: $fb_url"
+            if curl -sL "$fb_url" -o "$IMG_PATH" 2>/dev/null; then
+                echo "  ✓ Saved to: $IMG_PATH"
+            else
+                echo "  ⚠ Failed to download"
+                echo "  URL: $fb_url"
+            fi
+        fi
+    done
+
+    echo ""
+    echo "📁 Images saved to: $IMG_DIR"
+    echo ""
+    echo "Claude Code can view these with: Read $IMG_DIR/<filename>"
+    ls -la "$IMG_DIR" 2>/dev/null | grep -v "^total" | grep -v "^d"
+fi
 
 echo ""
 echo "----------------------------------------"

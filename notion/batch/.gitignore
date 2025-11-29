@@ -1,0 +1,6 @@
+# Data files - don't commit
+fixtures/
+results/
+
+# OS files
+.DS_Store
