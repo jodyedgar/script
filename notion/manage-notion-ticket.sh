@@ -8,12 +8,17 @@
 #   --pr-url, -p URL            Set GitHub PR URL
 #   --theme-id, -t ID           Set Shopify Theme Preview ID
 #   --summary, --notes, -n TEXT  Append summary/notes to ticket (supports markdown)
+#   --qa-before                  Extract Feedbucket image → upload as QA Before
+#   --qa-after                   Capture Chrome screenshot → upload as QA After
+#   --qa-after-file FILE         Upload specific file as QA After
 #
 # Examples:
 #   ./manage-notion-ticket.sh TICK-1166 --status Complete --summary "Fixed the issue"
 #   ./manage-notion-ticket.sh TICK-1166 --pr-url https://github.com/org/repo/pull/123
 #   ./manage-notion-ticket.sh TICK-1166 --status "In Progress" --notes "Working on feature X"
 #   ./manage-notion-ticket.sh TICK-1166 --theme-id 181781889340
+#   ./manage-notion-ticket.sh TICK-1166 --qa-before --qa-after
+#   ./manage-notion-ticket.sh TICK-1166 --status Complete --qa-before --qa-after-file ./screenshot.png
 
 # Tickets database ID
 TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
@@ -34,12 +39,19 @@ show_usage() {
     echo "  --theme-id, -t ID           Set Shopify Theme Preview ID"
     echo "  --summary, --notes, -n TEXT  Append summary/notes to ticket (supports markdown)"
     echo ""
+    echo "QA Screenshot Options:"
+    echo "  --qa-before                  Extract Feedbucket image → upload as QA Before"
+    echo "  --qa-after                   Capture Chrome screenshot → upload as QA After"
+    echo "  --qa-after-file FILE         Upload specific file as QA After"
+    echo ""
     echo "Examples:"
     echo "  $0 TICK-1166 --status Complete --summary 'Fixed the issue'"
     echo "  $0 TICK-1166 --pr-url https://github.com/org/repo/pull/123"
     echo "  $0 TICK-1166 --status 'In Progress'"
     echo "  $0 TICK-1166 --theme-id 181781889340"
     echo "  $0 TICK-1166 --status Complete --pr-url https://github.com/org/repo/pull/123 --summary 'Complete description'"
+    echo "  $0 TICK-1166 --qa-before --qa-after"
+    echo "  $0 TICK-1166 --status Complete --qa-before --qa-after-file ./screenshot.png"
     exit 1
 }
 
@@ -61,6 +73,13 @@ NEW_STATUS=""
 PR_URL=""
 THEME_ID=""
 SUMMARY_TEXT=""
+QA_BEFORE=false
+QA_AFTER=false
+QA_AFTER_FILE=""
+
+# Script directory for finding record-qa.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RECORD_QA_SCRIPT="$SCRIPT_DIR/record-qa.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -81,6 +100,18 @@ while [[ $# -gt 0 ]]; do
             SUMMARY_TEXT="$2"
             shift 2
             ;;
+        --qa-before)
+            QA_BEFORE=true
+            shift
+            ;;
+        --qa-after)
+            QA_AFTER=true
+            shift
+            ;;
+        --qa-after-file)
+            QA_AFTER_FILE="$2"
+            shift 2
+            ;;
         --help|-h)
             show_usage
             ;;
@@ -92,9 +123,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check if at least one action is specified
-if [ -z "$NEW_STATUS" ] && [ -z "$PR_URL" ] && [ -z "$THEME_ID" ] && [ -z "$SUMMARY_TEXT" ]; then
+if [ -z "$NEW_STATUS" ] && [ -z "$PR_URL" ] && [ -z "$THEME_ID" ] && [ -z "$SUMMARY_TEXT" ] && [ "$QA_BEFORE" = false ] && [ "$QA_AFTER" = false ] && [ -z "$QA_AFTER_FILE" ]; then
     echo -e "${RED}Error: At least one option must be specified${NC}"
     show_usage
+fi
+
+# Validate QA script exists if QA options are used
+if [ "$QA_BEFORE" = true ] || [ "$QA_AFTER" = true ] || [ -n "$QA_AFTER_FILE" ]; then
+    if [ ! -x "$RECORD_QA_SCRIPT" ]; then
+        echo -e "${RED}Error: record-qa.sh not found or not executable at $RECORD_QA_SCRIPT${NC}"
+        exit 1
+    fi
 fi
 
 # Check if NOTION_API_KEY is set, if not try to load from bash_profile
@@ -346,6 +385,41 @@ if [ -n "$SUMMARY_TEXT" ]; then
     else
         echo -e "${YELLOW}⚠ Warning: Could not append content to page${NC}"
         echo "$APPEND_RESPONSE" | jq '.'
+    fi
+fi
+
+# Execute QA Before if requested
+if [ "$QA_BEFORE" = true ]; then
+    echo ""
+    echo "Processing QA Before screenshot..."
+    if "$RECORD_QA_SCRIPT" "$TICKET_INPUT" --before; then
+        echo -e "${GREEN}✓ QA Before screenshot uploaded${NC}"
+    else
+        echo -e "${YELLOW}⚠ Warning: QA Before screenshot failed${NC}"
+    fi
+fi
+
+# Execute QA After if requested (capture from Chrome)
+if [ "$QA_AFTER" = true ]; then
+    echo ""
+    echo "Processing QA After screenshot (Chrome capture)..."
+    if "$RECORD_QA_SCRIPT" "$TICKET_INPUT" --capture-after; then
+        echo -e "${GREEN}✓ QA After screenshot captured and uploaded${NC}"
+    else
+        echo -e "${YELLOW}⚠ Warning: QA After screenshot capture failed${NC}"
+    fi
+fi
+
+# Execute QA After with specific file if requested
+if [ -n "$QA_AFTER_FILE" ]; then
+    echo ""
+    echo "Processing QA After screenshot from file..."
+    if [ ! -f "$QA_AFTER_FILE" ]; then
+        echo -e "${RED}Error: QA After file not found: $QA_AFTER_FILE${NC}"
+    elif "$RECORD_QA_SCRIPT" "$TICKET_INPUT" --after "$QA_AFTER_FILE"; then
+        echo -e "${GREEN}✓ QA After screenshot uploaded from $QA_AFTER_FILE${NC}"
+    else
+        echo -e "${YELLOW}⚠ Warning: QA After screenshot upload failed${NC}"
     fi
 fi
 
