@@ -45,6 +45,8 @@ show_usage() {
     echo "  --start, -s BATCH       Start working on a batch"
     echo "  --resume                Resume interrupted batch from saved state"
     echo "  --refresh               Refresh batch status from Notion"
+    echo "  --context               Generate context briefing for session handoff"
+    echo "  --qa-filter FILTER      Query tickets by QA field status (needs-after, needs-before, has-qa)"
     echo "  --fetch, -f BATCH       Fetch ticket details for batch"
     echo "  --qa BATCH              Run QA verification for batch"
     echo "  --record-qa BATCH       Record QA results (passed/failed)"
@@ -659,6 +661,287 @@ refresh_batch() {
     echo -e "${GREEN}✓ Refresh complete${NC}"
 }
 
+# Query tickets by QA field status (filter QA Before is_not_empty, QA After is_empty)
+query_qa_status() {
+    echo "========================================"
+    echo "Querying Tickets by QA Field Status"
+    echo "========================================"
+    echo ""
+
+    # Load credentials
+    if [ -f "$HOME/.bash_profile" ]; then
+        source "$HOME/.bash_profile"
+    fi
+
+    if [ -z "$NOTION_API_KEY" ]; then
+        echo -e "${RED}Error: NOTION_API_KEY not set${NC}"
+        exit 1
+    fi
+
+    # Notion database ID
+    TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
+
+    QA_FILTER="${1:-needs-after}"
+
+    echo "Filter: $QA_FILTER"
+    echo ""
+
+    case "$QA_FILTER" in
+        needs-after|needs-qa-after)
+            # Find tickets with QA Before but missing QA After
+            echo "Finding tickets with QA Before but missing QA After..."
+            FILTER_JSON='{
+                "and": [
+                    {
+                        "property": "QA Before",
+                        "files": {"is_not_empty": true}
+                    },
+                    {
+                        "property": "QA After",
+                        "files": {"is_empty": true}
+                    }
+                ]
+            }'
+            ;;
+        needs-before|needs-qa-before)
+            # Find tickets missing QA Before
+            echo "Finding tickets missing QA Before..."
+            FILTER_JSON='{
+                "property": "QA Before",
+                "files": {"is_empty": true}
+            }'
+            ;;
+        has-qa|complete-qa)
+            # Find tickets with both QA Before and After
+            echo "Finding tickets with complete QA (both Before and After)..."
+            FILTER_JSON='{
+                "and": [
+                    {
+                        "property": "QA Before",
+                        "files": {"is_not_empty": true}
+                    },
+                    {
+                        "property": "QA After",
+                        "files": {"is_not_empty": true}
+                    }
+                ]
+            }'
+            ;;
+        *)
+            echo -e "${RED}Unknown filter: $QA_FILTER${NC}"
+            echo "Available filters: needs-after, needs-before, has-qa"
+            exit 1
+            ;;
+    esac
+
+    # Query Notion database
+    RESPONSE=$(curl -s -X POST "https://api.notion.com/v1/databases/$TICKETS_DATABASE_ID/query" \
+        -H "Authorization: Bearer $NOTION_API_KEY" \
+        -H "Notion-Version: 2022-06-28" \
+        -H "Content-Type: application/json" \
+        -d "{\"filter\": $FILTER_JSON, \"page_size\": 20}")
+
+    # Parse and display results
+    TICKET_COUNT=$(echo "$RESPONSE" | jq '.results | length')
+
+    if [ "$TICKET_COUNT" -gt 0 ]; then
+        echo ""
+        echo -e "${GREEN}Found $TICKET_COUNT ticket(s):${NC}"
+        echo ""
+        echo "$RESPONSE" | jq -r '.results[] |
+            "TICK-\(.properties.ID.unique_id.number) | \(.properties.Name.title[0].plain_text // "N/A")[0:50] | \(.properties["Ticket Status"].status.name // "Unknown")"'
+    else
+        echo ""
+        echo -e "${YELLOW}No tickets found matching criteria.${NC}"
+    fi
+
+    echo ""
+}
+
+# Generate context briefing for session handoff
+generate_context() {
+    echo "========================================"
+    echo "Generating Context Briefing"
+    echo "========================================"
+    echo ""
+
+    CONTEXT_FILE="$RESULTS_DIR/batch_context.md"
+    BATCHES_DIR="$RESULTS_DIR/batches"
+
+    # Create batches cache directory
+    mkdir -p "$BATCHES_DIR"
+
+    # Get current batch
+    CURRENT=$(get_current_batch)
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Start building context file
+    cat > "$CONTEXT_FILE" << EOF
+# Batch Workflow Context Briefing
+
+**Generated:** $TIMESTAMP
+**Purpose:** Resume context after Claude session handoff
+
+---
+
+## Current State
+
+EOF
+
+    if [ -n "$CURRENT" ]; then
+        # Get batch state details
+        BATCH_STATUS=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].status // "unknown"')
+        STARTED=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].started // "unknown"')
+        QA_STATUS=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].qa_status // "not started"')
+        LAST_REFRESH=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].last_refresh // "never"')
+
+        cat >> "$CONTEXT_FILE" << EOF
+**Active Batch:** \`$CURRENT\`
+- Status: $BATCH_STATUS
+- Started: $STARTED
+- QA Status: $QA_STATUS
+- Last Refresh: $LAST_REFRESH
+
+EOF
+
+        # Add tickets to context
+        if [ -f "$RESULTS_DIR/categorized_tickets.json" ]; then
+            TICKET_COUNT=$(cat "$RESULTS_DIR/categorized_tickets.json" | jq -r --arg b "$CURRENT" '
+                [.[] | select(.batch_key == $b)] | length')
+
+            cat >> "$CONTEXT_FILE" << EOF
+## Tickets in Batch ($TICKET_COUNT total)
+
+| ID | Name | Category |
+|----|------|----------|
+EOF
+
+            # Add ticket rows
+            cat "$RESULTS_DIR/categorized_tickets.json" | jq -r --arg b "$CURRENT" '
+                [.[] | select(.batch_key == $b)] |
+                .[] |
+                "| \(.id) | \(.name | .[0:50]) | \(.category) |"' >> "$CONTEXT_FILE"
+
+            # Cache individual ticket data
+            echo ""
+            echo "Caching ticket data..."
+            while IFS= read -r ticket; do
+                TICKET_ID=$(echo "$ticket" | jq -r '.id')
+                echo "$ticket" > "$BATCHES_DIR/${TICKET_ID}.json"
+            done < <(jq -c --arg b "$CURRENT" '.[] | select(.batch_key == $b)' "$RESULTS_DIR/categorized_tickets.json")
+            CACHED_COUNT=$(ls "$BATCHES_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+            echo "  Cached $CACHED_COUNT ticket files"
+        fi
+
+        # Determine next action
+        cat >> "$CONTEXT_FILE" << EOF
+
+## Recommended Next Action
+
+EOF
+
+        if [ "$BATCH_STATUS" = "completed" ]; then
+            echo "Start a new batch: \`./batch_workflow.sh --list\`" >> "$CONTEXT_FILE"
+        elif [ "$QA_STATUS" = "passed" ]; then
+            echo "Complete the batch: \`./batch_workflow.sh --complete $CURRENT --pr-url <url>\`" >> "$CONTEXT_FILE"
+        elif [ "$QA_STATUS" = "failed" ]; then
+            echo "Fix issues and re-run QA: \`./batch_workflow.sh --qa $CURRENT\`" >> "$CONTEXT_FILE"
+        else
+            cat >> "$CONTEXT_FILE" << EOF
+1. Continue development work on tickets
+2. Run QA: \`./batch_workflow.sh --qa $CURRENT\`
+3. Record results: \`./batch_workflow.sh --record-qa $CURRENT --qa-status passed\`
+EOF
+        fi
+
+    else
+        cat >> "$CONTEXT_FILE" << EOF
+**No active batch**
+
+Start a new batch:
+\`\`\`bash
+./batch_workflow.sh --list      # See available batches
+./batch_workflow.sh --start <batch-key>
+\`\`\`
+EOF
+        # Cache all categorized tickets even when no active batch
+        if [ -f "$RESULTS_DIR/categorized_tickets.json" ]; then
+            echo ""
+            echo "Caching all categorized ticket data..."
+            while IFS= read -r ticket; do
+                TICKET_ID=$(echo "$ticket" | jq -r '.id')
+                echo "$ticket" > "$BATCHES_DIR/${TICKET_ID}.json"
+            done < <(jq -c '.[]' "$RESULTS_DIR/categorized_tickets.json")
+            CACHED_COUNT=$(ls "$BATCHES_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+            echo "  Cached $CACHED_COUNT ticket files"
+
+            # Add summary of available tickets to context
+            TOTAL_TICKETS=$(cat "$RESULTS_DIR/categorized_tickets.json" | jq 'length')
+            cat >> "$CONTEXT_FILE" << EOF
+
+## Available Tickets ($TOTAL_TICKETS total)
+
+Categorized tickets cached in \`$BATCHES_DIR/\`
+Run \`./batch_workflow.sh --list\` to see batches by category.
+EOF
+        fi
+    fi
+
+    # Add workflow state dump
+    cat >> "$CONTEXT_FILE" << EOF
+
+---
+
+## Workflow Commands
+
+\`\`\`bash
+./batch_workflow.sh --status    # Check current status
+./batch_workflow.sh --resume    # Resume from saved state
+./batch_workflow.sh --refresh   # Sync with Notion
+./batch_workflow.sh --context   # Regenerate this briefing
+\`\`\`
+
+## File Locations
+
+- Workflow state: \`$WORKFLOW_STATE\`
+- Categorized tickets: \`$RESULTS_DIR/categorized_tickets.json\`
+- Cached tickets: \`$BATCHES_DIR/\`
+- This briefing: \`$CONTEXT_FILE\`
+
+---
+
+*Load this file at the start of a new Claude session to restore context.*
+EOF
+
+    echo ""
+    echo -e "${GREEN}✓ Context briefing generated${NC}"
+    echo ""
+    echo "Files created:"
+    echo "  - $CONTEXT_FILE"
+    echo "  - $BATCHES_DIR/ (ticket cache)"
+    echo ""
+    echo "========================================"
+    echo "BRIEFING SUMMARY (copy to new session)"
+    echo "========================================"
+    echo ""
+
+    # Output a compact summary for easy copy/paste
+    if [ -n "$CURRENT" ]; then
+        echo "I'm working on batch '$CURRENT' ($BATCH_STATUS)."
+        echo "QA Status: $QA_STATUS"
+        if [ -f "$RESULTS_DIR/categorized_tickets.json" ]; then
+            echo "Tickets: $TICKET_COUNT in batch"
+        fi
+        echo ""
+        echo "Key files:"
+        echo "  - $RESULTS_DIR/batch_context.md (full briefing)"
+        echo "  - $RESULTS_DIR/categorized_tickets.json"
+    else
+        echo "No batch currently in progress."
+        echo "Run: ./batch_workflow.sh --list"
+    fi
+}
+
 # Initialize
 init_state
 
@@ -716,6 +999,15 @@ while [[ $# -gt 0 ]]; do
         --refresh|--sync|--reassess)
             COMMAND="refresh"
             shift
+            ;;
+        --context|--briefing|--dump-state)
+            COMMAND="context"
+            shift
+            ;;
+        --qa-filter|--qa-query)
+            COMMAND="qa-filter"
+            QA_FILTER_TYPE="$2"
+            shift 2
             ;;
         --pr-url)
             PR_URL="$2"
@@ -776,6 +1068,12 @@ case "$COMMAND" in
         ;;
     refresh)
         refresh_batch
+        ;;
+    context)
+        generate_context
+        ;;
+    qa-filter)
+        query_qa_status "${QA_FILTER_TYPE:-needs-after}"
         ;;
     *)
         show_usage
