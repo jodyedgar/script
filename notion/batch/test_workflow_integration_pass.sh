@@ -272,17 +272,253 @@ fi
 echo ""
 
 # ============================================
-# CHECK 8: Workflow State Tracking
+# CHECK 8: Resume/Recovery Capability
 # ============================================
-echo -e "${BLUE}Check 8: Workflow State Tracking${NC}"
+echo -e "${BLUE}Check 8: Resume/Recovery Capability${NC}"
 
-# Check if workflow maintains state
-if grep -q "workflow_state\|WORKFLOW_STATE" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
-    echo "  ✓ Workflow tracks state"
-    echo -e "  ${GREEN}✓ PASS: State tracking exists${NC}"
+# Check for state persistence file
+STATE_FILE="$RESULTS_DIR/batch_state.json"
+if [ -f "$STATE_FILE" ]; then
+    echo "  ✓ batch_state.json exists"
+
+    # Check if state file tracks progress
+    if cat "$STATE_FILE" 2>/dev/null | jq -e 'has("completed_tickets") or has("processed") or has("current_batch")' > /dev/null 2>&1; then
+        echo "  ✓ State file tracks progress"
+        echo -e "  ${GREEN}✓ PASS: State persistence with progress tracking${NC}"
+        PASSES=$((PASSES + 1))
+    else
+        echo -e "  ${YELLOW}! State file exists but lacks progress fields${NC}"
+    fi
+else
+    echo -e "  ${RED}✗ FAIL: No batch_state.json for state persistence${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for resume flag support
+RESUME_SUPPORT=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/batch_workflow.sh" "$NOTION_SCRIPTS/complete-batch.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "\-\-resume\|\-\-continue\|\-\-from-state\|\-\-skip-completed" "$script" 2>/dev/null; then
+            RESUME_SUPPORT=true
+            break
+        fi
+    fi
+done
+
+if [ "$RESUME_SUPPORT" = true ]; then
+    echo "  ✓ Scripts support --resume or --skip-completed"
+    echo -e "  ${GREEN}✓ PASS: Resume capability exists${NC}"
     PASSES=$((PASSES + 1))
 else
-    echo -e "  ${YELLOW}! No state tracking found${NC}"
+    echo -e "  ${RED}✗ FAIL: No --resume flag in workflow scripts${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo ""
+
+# ============================================
+# CHECK 9: Batch Progress Assessment
+# ============================================
+echo -e "${BLUE}Check 9: Batch Progress Assessment${NC}"
+
+# Check for --status flag
+STATUS_SUPPORT=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/batch_workflow.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "\-\-status\|\-\-progress" "$script" 2>/dev/null; then
+            STATUS_SUPPORT=true
+            break
+        fi
+    fi
+done
+
+if [ "$STATUS_SUPPORT" = true ]; then
+    echo "  ✓ Scripts support --status command"
+    echo -e "  ${GREEN}✓ PASS: Status/progress command exists${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No --status flag in scripts${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for Notion sync (query current ticket states)
+NOTION_SYNC=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/batch_workflow.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "Ticket Status\|api.notion.com.*query" "$script" 2>/dev/null; then
+            NOTION_SYNC=true
+            break
+        fi
+    fi
+done
+
+if [ "$NOTION_SYNC" = true ]; then
+    echo "  ✓ Scripts can query Notion for current states"
+    echo -e "  ${GREEN}✓ PASS: Live Notion sync capability${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: Cannot query Notion for current ticket states${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for --refresh/--reassess flag
+REASSESS_SUPPORT=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/categorize_tickets.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "\-\-refresh\|\-\-reassess\|\-\-sync" "$script" 2>/dev/null; then
+            REASSESS_SUPPORT=true
+            break
+        fi
+    fi
+done
+
+if [ "$REASSESS_SUPPORT" = true ]; then
+    echo "  ✓ Scripts support --refresh or --reassess"
+    echo -e "  ${GREEN}✓ PASS: Batch reassessment capability${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No --refresh flag to reassess batch${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo ""
+
+# ============================================
+# CHECK 10: Context Preservation (Anti-Cascade Compaction)
+# ============================================
+echo -e "${BLUE}Check 10: Context Preservation (Anti-Cascade Compaction)${NC}"
+
+# Check for context/briefing file
+CONTEXT_FILE="$RESULTS_DIR/batch_context.md"
+BRIEFING_FILE="$RESULTS_DIR/session_briefing.md"
+SUMMARY_FILE="$RESULTS_DIR/current_state.md"
+
+if [ -f "$CONTEXT_FILE" ] || [ -f "$BRIEFING_FILE" ] || [ -f "$SUMMARY_FILE" ]; then
+    echo "  ✓ Context/briefing file exists"
+    echo -e "  ${GREEN}✓ PASS: Session context preserved${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No context file for session resume${NC}"
+    echo "    Missing: batch_context.md, session_briefing.md, or current_state.md"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for --context or --briefing flag
+CONTEXT_GEN=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/batch_workflow.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "\-\-context\|\-\-briefing\|\-\-dump-state" "$script" 2>/dev/null; then
+            CONTEXT_GEN=true
+            break
+        fi
+    fi
+done
+
+if [ "$CONTEXT_GEN" = true ]; then
+    echo "  ✓ Scripts support --context or --briefing"
+    echo -e "  ${GREEN}✓ PASS: Context generation command exists${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No --context flag to generate briefing${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for ticket detail caching
+BATCH_TICKETS_DIR="$RESULTS_DIR/batches"
+if [ -d "$BATCH_TICKETS_DIR" ]; then
+    CACHE_COUNT=$(find "$BATCH_TICKETS_DIR" -name "*.json" -o -name "*.txt" 2>/dev/null | wc -l)
+    if [ "$CACHE_COUNT" -gt 0 ]; then
+        echo "  ✓ Ticket details cached locally ($CACHE_COUNT files)"
+        echo -e "  ${GREEN}✓ PASS: Ticket caching exists${NC}"
+        PASSES=$((PASSES + 1))
+    else
+        echo -e "  ${RED}✗ FAIL: Batch directory exists but no cached tickets${NC}"
+        FAILURES=$((FAILURES + 1))
+    fi
+else
+    echo -e "  ${RED}✗ FAIL: No ticket detail caching directory${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for architecture/file mapping
+ARCH_DOC="$SCRIPT_DIR/../ARCHITECTURE.md"
+if [ -f "$ARCH_DOC" ]; then
+    echo "  ✓ ARCHITECTURE.md exists"
+    echo -e "  ${GREEN}✓ PASS: Architecture documentation exists${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No ARCHITECTURE.md for file mapping${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+echo ""
+
+# ============================================
+# CHECK 11: QA Image Field Storage
+# ============================================
+echo -e "${BLUE}Check 11: QA Image Field Storage${NC}"
+
+# Check if scripts use dedicated property fields (not body append)
+USES_DEDICATED_FIELDS=false
+USES_BODY_APPEND=false
+
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$NOTION_SCRIPTS/record-qa.sh"; do
+    if [ -f "$script" ]; then
+        # Check for property-based image storage
+        if grep -q "properties.*QA\|\"QA Before\"\|\"QA After\"" "$script" 2>/dev/null; then
+            USES_DEDICATED_FIELDS=true
+        fi
+        # Check for body/children append (anti-pattern)
+        if grep -q "blocks.*children\|append.*image\|PATCH.*children" "$script" 2>/dev/null; then
+            USES_BODY_APPEND=true
+        fi
+    fi
+done
+
+if [ "$USES_DEDICATED_FIELDS" = true ] && [ "$USES_BODY_APPEND" = false ]; then
+    echo "  ✓ Uses dedicated Notion property fields for QA images"
+    echo -e "  ${GREEN}✓ PASS: QA images in dedicated fields${NC}"
+    PASSES=$((PASSES + 1))
+elif [ "$USES_BODY_APPEND" = true ]; then
+    echo -e "  ${RED}✗ FAIL: Images appended to page body instead of fields${NC}"
+    echo "    Should use: PATCH /pages/{id} with properties"
+    echo "    Not: PATCH /blocks/{id}/children"
+    FAILURES=$((FAILURES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No QA image storage implementation${NC}"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for QA field queryability
+QA_QUERY_SUPPORT=false
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$NOTION_SCRIPTS/fetch-batch.sh"; do
+    if [ -f "$script" ]; then
+        if grep -q "QA Before.*is_not_empty\|QA After.*is_empty\|filter.*QA" "$script" 2>/dev/null; then
+            QA_QUERY_SUPPORT=true
+            break
+        fi
+    fi
+done
+
+if [ "$QA_QUERY_SUPPORT" = true ]; then
+    echo "  ✓ Can query tickets by QA field status"
+    echo -e "  ${GREEN}✓ PASS: QA fields are queryable${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: Cannot filter tickets by QA field status${NC}"
+    echo "    Cannot query: 'has QA Before but missing QA After'"
+    FAILURES=$((FAILURES + 1))
+fi
+
+# Check for QA comparison capability
+QA_COMPARE_SCRIPT="$NOTION_SCRIPTS/compare-qa.sh"
+if [ -f "$QA_COMPARE_SCRIPT" ]; then
+    echo "  ✓ compare-qa.sh exists"
+    echo -e "  ${GREEN}✓ PASS: QA comparison capability${NC}"
+    PASSES=$((PASSES + 1))
+else
+    echo -e "  ${RED}✗ FAIL: No compare-qa.sh for before/after comparison${NC}"
+    FAILURES=$((FAILURES + 1))
 fi
 
 echo ""
@@ -336,17 +572,34 @@ if [ "$FAILURES" -eq 0 ]; then
     echo "  ✓ record-qa.sh        - Record QA verification"
     echo "  ✓ complete-batch.sh   - Batch ticket completion"
     echo "  ✓ batch_workflow.sh   - End-to-end orchestration"
+    echo "  ✓ Resume capability   - State persistence + --resume flag"
+    echo "  ✓ Progress assessment - --status + Notion sync + --refresh"
+    echo "  ✓ Context preservation- Briefing files + ticket caching"
+    echo "  ✓ QA image fields     - Dedicated properties (not page body)"
     echo ""
     echo "Workflow commands:"
     echo "  ./batch_workflow.sh --list                    # See batches"
     echo "  ./batch_workflow.sh --start <batch>           # Start batch"
+    echo "  ./batch_workflow.sh --status                  # Check progress"
     echo "  ./batch_workflow.sh --qa <batch>              # Run QA"
-    echo "  ./batch_workflow.sh --record-qa <batch> --qa-status passed"
     echo "  ./batch_workflow.sh --complete <batch>        # Finish batch"
+    echo "  ./batch_workflow.sh --resume                  # Resume interrupted"
+    echo "  ./batch_workflow.sh --context                 # Generate briefing"
     exit 0
 else
     echo -e "${RED}TEST FAILED: $FAILURES integration point(s) missing${NC}"
     echo ""
-    echo "Run the setup to create missing scripts."
+    echo "Required integration points:"
+    echo "  □ fetch-batch.sh      - Fetch tickets by category/batch"
+    echo "  □ get-staging-url.sh  - Generate preview URLs"
+    echo "  □ record-qa.sh        - Record QA verification"
+    echo "  □ complete-batch.sh   - Batch ticket completion"
+    echo "  □ batch_workflow.sh   - End-to-end orchestration"
+    echo "  □ Resume capability   - State persistence + --resume flag"
+    echo "  □ Progress assessment - --status + Notion sync + --refresh"
+    echo "  □ Context preservation- Briefing files + ticket caching"
+    echo "  □ QA image fields     - Dedicated properties (not page body)"
+    echo ""
+    echo "Run the setup to create missing integration points."
     exit 1
 fi

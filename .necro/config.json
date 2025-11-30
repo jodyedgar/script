@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "initialized": "2025-11-23 20:59:37",
+  "project_root": "/Users/jodyedgar/Dropbox/scripts",
+  "deprecated_retention_days": 30,
+  "inventory_settings": {
+    "ignore_dirs": ["node_modules", ".git", "dist", "build", "deprecated", ".necro"],
+    "suspicious_patterns": ["*-old.*", "*-backup.*", "*.bak", "*-copy.*", "*-test.*", "*-tmp.*"]
+  }
+}

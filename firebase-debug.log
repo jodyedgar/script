@@ -1,0 +1,42 @@
+[debug] [2025-11-24T19:32:49.205Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.207Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.207Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.207Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.213Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.213Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.235Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.235Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.236Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.236Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.237Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.237Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-24T19:32:49.237Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-24T19:32:49.237Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.811Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.813Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.813Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.813Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.824Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.824Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.844Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.844Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.845Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.845Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.846Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.846Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-29T15:21:40.846Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-29T15:21:40.846Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.376Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.377Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.377Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.377Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.387Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.387Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.408Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.409Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.409Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.409Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.410Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.410Z] > authorizing via signed-in user (jody@howtoshopify.com)
+[debug] [2025-11-30T16:20:40.410Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2025-11-30T16:20:40.410Z] > authorizing via signed-in user (jody@howtoshopify.com)
