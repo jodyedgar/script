@@ -44,6 +44,7 @@ show_usage() {
     echo "Commands:"
     echo "  --start, -s BATCH       Start working on a batch"
     echo "  --resume                Resume interrupted batch from saved state"
+    echo "  --refresh               Refresh batch status from Notion"
     echo "  --fetch, -f BATCH       Fetch ticket details for batch"
     echo "  --qa BATCH              Run QA verification for batch"
     echo "  --record-qa BATCH       Record QA results (passed/failed)"
@@ -560,6 +561,104 @@ resume_batch() {
     fi
 }
 
+# Refresh batch status from Notion
+refresh_batch() {
+    echo "========================================"
+    echo "Refreshing Batch Status from Notion"
+    echo "========================================"
+    echo ""
+
+    # Get current batch
+    CURRENT=$(get_current_batch)
+    if [ -z "$CURRENT" ]; then
+        echo -e "${YELLOW}No batch currently in progress.${NC}"
+        echo "Refreshing all categorized tickets..."
+        echo ""
+    else
+        echo "Current batch: $CURRENT"
+        echo ""
+    fi
+
+    # Load credentials
+    if [ -f "$HOME/.bash_profile" ]; then
+        source "$HOME/.bash_profile"
+    fi
+
+    if [ -z "$NOTION_API_KEY" ]; then
+        echo -e "${RED}Error: NOTION_API_KEY not set${NC}"
+        exit 1
+    fi
+
+    # Notion database ID
+    TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
+
+    echo "Fetching current ticket statuses from Notion..."
+    echo ""
+
+    # If we have categorized tickets, refresh their status
+    if [ -f "$RESULTS_DIR/categorized_tickets.json" ]; then
+        TICKET_IDS=$(cat "$RESULTS_DIR/categorized_tickets.json" | jq -r '.[].page_id' | head -20)
+
+        COMPLETED=0
+        IN_PROGRESS=0
+        BACKLOG=0
+        TOTAL=0
+
+        for PAGE_ID in $TICKET_IDS; do
+            TOTAL=$((TOTAL + 1))
+
+            # Fetch ticket status from Notion
+            STATUS=$(curl -s "https://api.notion.com/v1/pages/$PAGE_ID" \
+                -H "Authorization: Bearer $NOTION_API_KEY" \
+                -H "Notion-Version: 2022-06-28" | \
+                jq -r '.properties["Ticket Status"].status.name // "Unknown"')
+
+            case "$STATUS" in
+                "Complete"|"Completed")
+                    COMPLETED=$((COMPLETED + 1))
+                    ;;
+                "In Progress"|"InProgress")
+                    IN_PROGRESS=$((IN_PROGRESS + 1))
+                    ;;
+                *)
+                    BACKLOG=$((BACKLOG + 1))
+                    ;;
+            esac
+        done
+
+        echo "Ticket Status Summary (first 20):"
+        echo "  Completed:   $COMPLETED"
+        echo "  In Progress: $IN_PROGRESS"
+        echo "  Backlog:     $BACKLOG"
+        echo "  Total:       $TOTAL"
+        echo ""
+
+        # Update workflow state with refresh timestamp
+        if [ -n "$CURRENT" ]; then
+            update_batch_state "$CURRENT" "last_refresh" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            update_batch_state "$CURRENT" "completed_count" "$COMPLETED"
+            update_batch_state "$CURRENT" "in_progress_count" "$IN_PROGRESS"
+            update_batch_state "$CURRENT" "backlog_count" "$BACKLOG"
+        fi
+
+        if [ "$COMPLETED" -eq "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
+            echo -e "${GREEN}All tickets completed!${NC}"
+            echo ""
+            echo "Ready to finalize batch:"
+            echo "  $0 --complete $CURRENT"
+        elif [ "$COMPLETED" -gt 0 ]; then
+            REMAINING=$((TOTAL - COMPLETED))
+            echo -e "${BLUE}Progress: $COMPLETED/$TOTAL completed ($REMAINING remaining)${NC}"
+        fi
+    else
+        echo -e "${YELLOW}No categorized tickets found.${NC}"
+        echo "Run: ./categorize_tickets.sh"
+    fi
+
+    echo ""
+    echo -e "${GREEN}✓ Refresh complete${NC}"
+}
+
 # Initialize
 init_state
 
@@ -612,6 +711,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --resume)
             COMMAND="resume"
+            shift
+            ;;
+        --refresh|--sync|--reassess)
+            COMMAND="refresh"
             shift
             ;;
         --pr-url)
@@ -670,6 +773,9 @@ case "$COMMAND" in
         ;;
     resume)
         resume_batch
+        ;;
+    refresh)
+        refresh_batch
         ;;
     *)
         show_usage

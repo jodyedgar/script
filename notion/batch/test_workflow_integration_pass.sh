@@ -367,7 +367,7 @@ fi
 
 # Check for --refresh/--reassess flag
 REASSESS_SUPPORT=false
-for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/categorize_tickets.sh"; do
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/categorize_tickets.sh" "$SCRIPT_DIR/batch_workflow.sh"; do
     if [ -f "$script" ]; then
         if grep -q "\-\-refresh\|\-\-reassess\|\-\-sync" "$script" 2>/dev/null; then
             REASSESS_SUPPORT=true
