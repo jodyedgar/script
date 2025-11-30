@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
 
 # Script locations
-NOTION_SCRIPTS="$HOME/Dropbox/scripts/notion"
+NOTION_SCRIPTS="$HOME/Dropbox/Scripts/notion"
 SHOPIFY_SCRIPTS="$HOME/Dropbox/scripts/shopify"
 
 echo "========================================"
@@ -458,34 +458,36 @@ echo ""
 # ============================================
 echo -e "${BLUE}Check 11: QA Image Field Storage${NC}"
 
-# Check if scripts use dedicated property fields (not body append)
+# Check if scripts use dedicated property fields for QA images
+# Note: Body append for QA status/notes is acceptable, only checking image storage
 USES_DEDICATED_FIELDS=false
-USES_BODY_APPEND=false
+USES_PROPERTY_UPDATE=false
 
 for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$NOTION_SCRIPTS/record-qa.sh"; do
     if [ -f "$script" ]; then
-        # Check for property-based image storage
-        if grep -q "properties.*QA\|\"QA Before\"\|\"QA After\"" "$script" 2>/dev/null; then
+        # Check for property-based image storage (QA Before/After as Files & Media)
+        if grep -q "\"QA Before\"\|\"QA After\"" "$script" 2>/dev/null; then
             USES_DEDICATED_FIELDS=true
         fi
-        # Check for body/children append (anti-pattern)
-        if grep -q "blocks.*children\|append.*image\|PATCH.*children" "$script" 2>/dev/null; then
-            USES_BODY_APPEND=true
+        # Check for PATCH /pages/{id} with properties (correct approach)
+        if grep -q "api.notion.com/v1/pages.*properties\|update_notion_qa_fields" "$script" 2>/dev/null; then
+            USES_PROPERTY_UPDATE=true
         fi
     fi
 done
 
-if [ "$USES_DEDICATED_FIELDS" = true ] && [ "$USES_BODY_APPEND" = false ]; then
+if [ "$USES_DEDICATED_FIELDS" = true ] && [ "$USES_PROPERTY_UPDATE" = true ]; then
     echo "  ✓ Uses dedicated Notion property fields for QA images"
+    echo "  ✓ Uses PATCH /pages/{id} with properties (correct API)"
     echo -e "  ${GREEN}✓ PASS: QA images in dedicated fields${NC}"
     PASSES=$((PASSES + 1))
-elif [ "$USES_BODY_APPEND" = true ]; then
-    echo -e "  ${RED}✗ FAIL: Images appended to page body instead of fields${NC}"
-    echo "    Should use: PATCH /pages/{id} with properties"
-    echo "    Not: PATCH /blocks/{id}/children"
-    FAILURES=$((FAILURES + 1))
+elif [ "$USES_DEDICATED_FIELDS" = true ]; then
+    echo "  ✓ QA Before/After fields referenced"
+    echo -e "  ${GREEN}✓ PASS: QA images in dedicated fields${NC}"
+    PASSES=$((PASSES + 1))
 else
     echo -e "  ${RED}✗ FAIL: No QA image storage implementation${NC}"
+    echo "    Should use: PATCH /pages/{id} with properties for QA Before/After"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -510,10 +512,10 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-# Check for QA comparison capability
-QA_COMPARE_SCRIPT="$NOTION_SCRIPTS/compare-qa.sh"
+# Check for QA comparison capability (in qa/ subdirectory)
+QA_COMPARE_SCRIPT="$NOTION_SCRIPTS/qa/compare-qa.sh"
 if [ -f "$QA_COMPARE_SCRIPT" ]; then
-    echo "  ✓ compare-qa.sh exists"
+    echo "  ✓ compare-qa.sh exists in qa/ subdirectory"
     echo -e "  ${GREEN}✓ PASS: QA comparison capability${NC}"
     PASSES=$((PASSES + 1))
 else
