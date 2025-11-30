@@ -29,8 +29,8 @@ NC='\033[0m'
 # Script locations
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-NOTION_SCRIPTS="$HOME/Dropbox/scripts/notion"
-SHOPIFY_SCRIPTS="$HOME/Dropbox/scripts/shopify"
+NOTION_SCRIPTS="$HOME/Dropbox/Scripts/notion"
+SHOPIFY_SCRIPTS="$HOME/Dropbox/Scripts/shopify"
 
 # Results directory
 RESULTS_DIR="$SCRIPT_DIR/results"
@@ -43,6 +43,7 @@ show_usage() {
     echo ""
     echo "Commands:"
     echo "  --start, -s BATCH       Start working on a batch"
+    echo "  --resume                Resume interrupted batch from saved state"
     echo "  --fetch, -f BATCH       Fetch ticket details for batch"
     echo "  --qa BATCH              Run QA verification for batch"
     echo "  --record-qa BATCH       Record QA results (passed/failed)"
@@ -65,6 +66,9 @@ show_usage() {
     echo "  5. $0 --qa pdp-P1-QuickWins     # QA verification"
     echo "  6. $0 --record-qa pdp-P1-QuickWins --qa-status passed"
     echo "  7. $0 --complete pdp-P1-QuickWins --pr-url <url>"
+    echo ""
+    echo "Resume interrupted work:"
+    echo "  $0 --resume                     # Continue from last state"
     exit 1
 }
 
@@ -442,6 +446,120 @@ reset_workflow() {
     echo -e "${GREEN}✓ Workflow state reset${NC}"
 }
 
+# Resume interrupted batch
+resume_batch() {
+    echo "========================================"
+    echo "Resuming Batch Workflow"
+    echo "========================================"
+    echo ""
+
+    # Check for saved state
+    if [ ! -f "$WORKFLOW_STATE" ]; then
+        echo -e "${YELLOW}No saved workflow state found.${NC}"
+        echo ""
+        echo "Start a new batch with: $0 --start <batch-key>"
+        exit 1
+    fi
+
+    # Get current batch
+    CURRENT=$(get_current_batch)
+    if [ -z "$CURRENT" ]; then
+        echo -e "${YELLOW}No batch currently in progress.${NC}"
+        echo ""
+        echo "Start a new batch with: $0 --start <batch-key>"
+        echo "Available batches: $0 --list"
+        exit 1
+    fi
+
+    echo -e "Resuming batch: ${GREEN}$CURRENT${NC}"
+    echo ""
+
+    # Get batch state
+    BATCH_STATUS=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].status // "unknown"')
+    STARTED=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].started // "unknown"')
+    QA_STATUS=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].qa_status // empty')
+    QA_STARTED=$(cat "$WORKFLOW_STATE" | jq -r --arg b "$CURRENT" '.batches[$b].qa_started // empty')
+
+    echo "Batch state:"
+    echo "  Status: $BATCH_STATUS"
+    echo "  Started: $STARTED"
+    if [ -n "$QA_STATUS" ]; then
+        echo "  QA Status: $QA_STATUS"
+    fi
+    echo ""
+
+    # Determine next action based on state
+    echo "========================================"
+    echo "Recommended Next Action"
+    echo "========================================"
+    echo ""
+
+    if [ "$BATCH_STATUS" = "completed" ]; then
+        echo -e "${GREEN}This batch is already completed!${NC}"
+        echo ""
+        echo "Start a new batch:"
+        echo "  $0 --list"
+        echo "  $0 --start <batch-key>"
+
+    elif [ "$QA_STATUS" = "passed" ]; then
+        echo -e "${GREEN}QA passed - ready to complete batch${NC}"
+        echo ""
+        echo "Complete the batch:"
+        echo "  $0 --complete $CURRENT --pr-url <github-pr-url>"
+
+    elif [ "$QA_STATUS" = "failed" ]; then
+        echo -e "${YELLOW}QA failed - fix issues and re-run QA${NC}"
+        echo ""
+        echo "After fixing issues:"
+        echo "  $0 --qa $CURRENT"
+
+    elif [ -n "$QA_STARTED" ]; then
+        echo -e "${BLUE}QA in progress - awaiting results${NC}"
+        echo ""
+        echo "Record QA results:"
+        echo "  $0 --record-qa $CURRENT --qa-status passed"
+        echo "  $0 --record-qa $CURRENT --qa-status failed --summary 'Issue description'"
+
+    elif [ "$BATCH_STATUS" = "in_progress" ]; then
+        echo -e "${BLUE}Batch in progress - development phase${NC}"
+        echo ""
+        echo "After completing development:"
+        echo "  1. Commit and push changes"
+        echo "  2. $0 --qa $CURRENT"
+
+    else
+        echo -e "${YELLOW}Unknown state - showing status${NC}"
+        show_status
+    fi
+
+    echo ""
+
+    # Show ticket summary if available
+    if [ -f "$RESULTS_DIR/categorized_tickets.json" ]; then
+        TICKET_COUNT=$(cat "$RESULTS_DIR/categorized_tickets.json" | jq -r --arg b "$CURRENT" '
+            [.[] | select(.batch_key == $b)] | length')
+        echo "Tickets in batch: $TICKET_COUNT"
+
+        # Show ticket list
+        echo ""
+        echo "Tickets:"
+        cat "$RESULTS_DIR/categorized_tickets.json" | jq -r --arg b "$CURRENT" '
+            [.[] | select(.batch_key == $b)] |
+            .[] |
+            "  \(.id): \(.name)"' | head -10
+
+        if [ "$TICKET_COUNT" -gt 10 ]; then
+            echo "  ... and $((TICKET_COUNT - 10)) more"
+        fi
+    fi
+
+    # Show batch directory if exists
+    if [ -d "$RESULTS_DIR/batch-$CURRENT" ]; then
+        echo ""
+        echo "Batch files: $RESULTS_DIR/batch-$CURRENT/"
+    fi
+}
+
 # Initialize
 init_state
 
@@ -490,6 +608,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --reset)
             COMMAND="reset"
+            shift
+            ;;
+        --resume)
+            COMMAND="resume"
             shift
             ;;
         --pr-url)
@@ -545,6 +667,9 @@ case "$COMMAND" in
         ;;
     reset)
         reset_workflow
+        ;;
+    resume)
+        resume_batch
         ;;
     *)
         show_usage
