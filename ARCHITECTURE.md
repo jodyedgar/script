@@ -1,6 +1,6 @@
 # Architecture - Current Active Files
 
-**Last Updated:** 2025-11-23 21:15:28
+**Last Updated:** 2025-11-30 12:00:00
 
 > ⚠️ **IMPORTANT for AI Assistants and Developers**
 >
@@ -40,6 +40,8 @@ Directory tree (install 'tree' for better visualization):
 /Users/jodyedgar/Dropbox/Scripts/node-sonos-http-api-master/static/docs
 /Users/jodyedgar/Dropbox/Scripts/node-sonos-http-api-master/static/tts
 /Users/jodyedgar/Dropbox/Scripts/notion
+/Users/jodyedgar/Dropbox/Scripts/notion/batch
+/Users/jodyedgar/Dropbox/Scripts/notion/qa
 /Users/jodyedgar/Dropbox/Scripts/shopify
 ```
 
@@ -61,10 +63,21 @@ No standard source directories found.
 - `notion/fetch-and-navigate.sh` ⚡
 - `notion/fetch-notion-ticket.sh` ⚡
 - `notion/manage-notion-ticket.sh` ⚡
+- `notion/record-qa.sh` ⚡ - QA verification with Firebase screenshot storage
 - `notion/ticket-time-estimator.sh` ⚡
 - `notion/update-ticket-credits.sh` ⚡
+- `notion/batch/batch-workflow.sh` ⚡ - Batch processing for multiple tickets
+- `notion/batch/test_workflow_integration.sh` ⚡
+- `notion/qa/compare-qa.sh` ⚡ - Compare QA Before/After screenshots
+- `notion/qa/extract-feedbucket-image.sh` ⚡ - Extract Feedbucket images from tickets
+- `notion/qa/setup-firebase.sh` ⚡ - Firebase Storage setup helper
 - `shopify/add-clinerules-to-project.sh` ⚡
 - `shopify/setup-shopify-store.sh` ⚡
+
+### Node.js Scripts (.js)
+
+- `notion/qa/upload-screenshot.js` - Firebase Storage upload handler
+- `notion/qa/capture-screenshot.js` - Chrome DevTools screenshot capture
 
 ### PowerShell Scripts (.ps1)
 
@@ -87,17 +100,31 @@ No PowerShell scripts found.
 
 ## Package.json Scripts
 
-No package.json found.
+### notion/qa/package.json
+
+Dependencies for QA screenshot system:
+- `firebase-admin` - Firebase Storage and Firestore access
+- `ws` - WebSocket for Chrome DevTools Protocol
+
+## External Services
+
+### Firebase (bucky-app-355a3)
+
+The QA screenshot system uses Firebase for storage:
+- **Firebase Storage**: `bucky-app-355a3.firebasestorage.app` - Stores QA Before/After screenshots
+- **Firestore**: `qa_screenshots` collection - Metadata for uploaded screenshots
+- **Service Account**: `notion/qa/service-account.json` (git-ignored, sensitive)
 
 ## Git Information
 
-**Current Branch:** `master`
+**Current Branch:** `batch`
 
 **Recent Commits:**
 ```
+2592270 Add QA screenshot system with Firebase Storage integration
+821a855 Expand batch workflow tests with resume, progress, and QA field checks
+a33ecbb Add batch processing system for Notion ticket management
 6bc7753 Fix ANSI color code display in all Necro scripts
-27286ee Add Necro - Project Archaeology & Cleanup System
-1ffb663 Initial commit: Add scripts collection
 ```
 
 ---
