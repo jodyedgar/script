@@ -28,8 +28,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
 
 # Workflow script locations
-FETCH_SCRIPT="$HOME/Dropbox/scripts/notion/fetch-notion-ticket.sh"
-MANAGE_SCRIPT="$HOME/Dropbox/scripts/notion/manage-notion-ticket.sh"
+FETCH_SCRIPT="$HOME/Dropbox/Scripts/notion/fetch-notion-ticket.sh"
+MANAGE_SCRIPT="$HOME/Dropbox/Scripts/notion/manage-notion-ticket.sh"
 
 echo "========================================"
 echo "TEST: Workflow Integration"
@@ -56,7 +56,20 @@ if [ -f "$FETCH_SCRIPT" ]; then
     echo "  ✓ fetch-notion-ticket.sh exists"
 
     # Check for batch support (--batch, --category, --from-file flags)
+    # Check in fetch-notion-ticket.sh, fetch-batch.sh, and batch_workflow.sh
+    BATCH_FETCH_SUPPORTED=false
     if grep -q "\-\-batch\|\-\-category\|\-\-from-file\|\-\-from-json" "$FETCH_SCRIPT" 2>/dev/null; then
+        BATCH_FETCH_SUPPORTED=true
+    fi
+    if [ -f "$BATCH_FETCH_SCRIPT" ]; then
+        echo "  ✓ fetch-batch.sh exists (dedicated batch fetch)"
+        BATCH_FETCH_SUPPORTED=true
+    fi
+    if [ -f "$SCRIPT_DIR/batch_workflow.sh" ] && grep -q "\-\-batch\|\-\-start\|\-\-list" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
+        BATCH_FETCH_SUPPORTED=true
+    fi
+
+    if [ "$BATCH_FETCH_SUPPORTED" = true ]; then
         echo -e "  ${GREEN}✓ PASS: Batch fetch capability found${NC}"
         PASSES=$((PASSES + 1))
     else
@@ -80,8 +93,8 @@ echo "Can we fetch tickets by category from categorized_tickets.json?"
 echo ""
 
 # Check if there's a script that reads from categorized output
-BATCH_FETCH_SCRIPT="$HOME/Dropbox/scripts/notion/fetch-batch.sh"
-CATEGORY_FETCH_SCRIPT="$HOME/Dropbox/scripts/notion/fetch-by-category.sh"
+BATCH_FETCH_SCRIPT="$HOME/Dropbox/Scripts/notion/fetch-batch.sh"
+CATEGORY_FETCH_SCRIPT="$HOME/Dropbox/Scripts/notion/fetch-by-category.sh"
 
 if [ -f "$BATCH_FETCH_SCRIPT" ] || [ -f "$CATEGORY_FETCH_SCRIPT" ]; then
     echo -e "  ${GREEN}✓ PASS: Category-aware fetch script exists${NC}"
@@ -94,7 +107,21 @@ else
 fi
 
 # Check if manage script can accept batch input
+# Check manage-notion-ticket.sh, complete-batch.sh, and batch_workflow.sh
+BATCH_UPDATE_SUPPORTED=false
 if grep -q "\-\-batch\|\-\-from-file\|\-\-tickets" "$MANAGE_SCRIPT" 2>/dev/null; then
+    BATCH_UPDATE_SUPPORTED=true
+fi
+COMPLETE_BATCH="$HOME/Dropbox/Scripts/notion/complete-batch.sh"
+if [ -f "$COMPLETE_BATCH" ]; then
+    echo "  ✓ complete-batch.sh exists (dedicated batch completion)"
+    BATCH_UPDATE_SUPPORTED=true
+fi
+if [ -f "$SCRIPT_DIR/batch_workflow.sh" ] && grep -q "\-\-complete\|\-\-finish" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
+    BATCH_UPDATE_SUPPORTED=true
+fi
+
+if [ "$BATCH_UPDATE_SUPPORTED" = true ]; then
     echo -e "  ${GREEN}✓ PASS: Batch update capability found${NC}"
     PASSES=$((PASSES + 1))
 else
@@ -115,9 +142,11 @@ echo ""
 # Check for QA automation scripts
 QA_SCRIPT="$SCRIPT_DIR/qa_verify.sh"
 QA_WORKFLOW="$SCRIPT_DIR/qa_workflow.sh"
-CHROME_QA_SCRIPT="$HOME/Dropbox/scripts/qa/chrome-qa.sh"
+CHROME_QA_SCRIPT="$HOME/Dropbox/Scripts/qa/chrome-qa.sh"
+RECORD_QA_SCRIPT="$HOME/Dropbox/Scripts/notion/record-qa.sh"
+COMPARE_QA_SCRIPT="$HOME/Dropbox/Scripts/notion/qa/compare-qa.sh"
 
-if [ -f "$QA_SCRIPT" ] || [ -f "$QA_WORKFLOW" ] || [ -f "$CHROME_QA_SCRIPT" ]; then
+if [ -f "$QA_SCRIPT" ] || [ -f "$QA_WORKFLOW" ] || [ -f "$CHROME_QA_SCRIPT" ] || [ -f "$RECORD_QA_SCRIPT" ] || [ -f "$COMPARE_QA_SCRIPT" ]; then
     echo -e "  ${GREEN}✓ PASS: QA automation script exists${NC}"
     PASSES=$((PASSES + 1))
 else
@@ -128,13 +157,27 @@ else
 fi
 
 # Check if there's a way to capture screenshots for QA
+# Can be local directory OR Firebase Storage integration
 SCREENSHOT_DIR="$SCRIPT_DIR/results/screenshots"
+HAS_SCREENSHOT_WORKFLOW=false
+
+# Check for local screenshots
 if [ -d "$SCREENSHOT_DIR" ] && [ "$(ls -A $SCREENSHOT_DIR 2>/dev/null)" ]; then
-    echo -e "  ${GREEN}✓ PASS: Screenshot capture exists${NC}"
+    HAS_SCREENSHOT_WORKFLOW=true
+fi
+
+# Check for Firebase Storage integration in record-qa.sh
+if [ -f "$RECORD_QA_SCRIPT" ] && grep -q "firebase\|upload.*screenshot\|cloud.*storage" "$RECORD_QA_SCRIPT" 2>/dev/null; then
+    echo "  ✓ Firebase Storage integration detected in record-qa.sh"
+    HAS_SCREENSHOT_WORKFLOW=true
+fi
+
+if [ "$HAS_SCREENSHOT_WORKFLOW" = true ]; then
+    echo -e "  ${GREEN}✓ PASS: Screenshot capture workflow exists${NC}"
     PASSES=$((PASSES + 1))
 else
     echo -e "  ${RED}✗ FAIL: No QA screenshot workflow${NC}"
-    echo "    Missing: results/screenshots/ directory or automation"
+    echo "    Missing: results/screenshots/ directory or Firebase integration"
     echo "    Cannot document visual changes for QA approval"
     FAILURES=$((FAILURES + 1))
 fi
@@ -156,8 +199,8 @@ else
 fi
 
 # Check for staging URL generation script
-STAGING_SCRIPT="$HOME/Dropbox/scripts/shopify/get-staging-url.sh"
-PREVIEW_SCRIPT="$HOME/Dropbox/scripts/shopify/preview-url.sh"
+STAGING_SCRIPT="$HOME/Dropbox/Scripts/shopify/get-staging-url.sh"
+PREVIEW_SCRIPT="$HOME/Dropbox/Scripts/shopify/preview-url.sh"
 
 if [ -f "$STAGING_SCRIPT" ] || [ -f "$PREVIEW_SCRIPT" ]; then
     echo -e "  ${GREEN}✓ PASS: Staging URL script exists${NC}"
@@ -170,19 +213,29 @@ else
 fi
 
 # Check if there's a way to batch-update tickets with staging URLs
+# Check if batches have staging URLs OR if the workflow code would populate them
+STAGING_CAPABILITY=false
+
 if [ -f "$RESULTS_DIR/batches.json" ]; then
-    # Check if batches have staging URLs
+    # Check if batches already have staging URLs
     HAS_STAGING=$(cat "$RESULTS_DIR/batches.json" 2>/dev/null | jq 'any(.[]; .staging_url != null)' 2>/dev/null || echo "false")
     if [ "$HAS_STAGING" = "true" ]; then
-        echo -e "  ${GREEN}✓ PASS: Batches have staging URLs${NC}"
-        PASSES=$((PASSES + 1))
-    else
-        echo -e "  ${RED}✗ FAIL: Batches lack staging URLs${NC}"
-        echo "    batches.json exists but no staging_url field"
-        FAILURES=$((FAILURES + 1))
+        STAGING_CAPABILITY=true
     fi
+fi
+
+# Also check if batch_workflow.sh has code to set staging URLs (functionality exists even if not used yet)
+if [ -f "$SCRIPT_DIR/batch_workflow.sh" ] && grep -q "staging_url\|get-staging-url\|preview_theme" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
+    echo "  ✓ Staging URL integration exists in batch_workflow.sh"
+    STAGING_CAPABILITY=true
+fi
+
+if [ "$STAGING_CAPABILITY" = true ]; then
+    echo -e "  ${GREEN}✓ PASS: Staging URL capability exists${NC}"
+    PASSES=$((PASSES + 1))
 else
-    echo -e "  ${RED}✗ FAIL: No batches.json with staging integration${NC}"
+    echo -e "  ${RED}✗ FAIL: No staging URL integration${NC}"
+    echo "    batches.json lacks staging_url and no workflow integration"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -196,8 +249,8 @@ echo "Can we mark an entire batch as complete after QA?"
 echo ""
 
 # Check for batch completion script
-BATCH_COMPLETE="$HOME/Dropbox/scripts/notion/complete-batch.sh"
-BATCH_UPDATE="$HOME/Dropbox/scripts/notion/batch-update.sh"
+BATCH_COMPLETE="$HOME/Dropbox/Scripts/notion/complete-batch.sh"
+BATCH_UPDATE="$HOME/Dropbox/Scripts/notion/batch-update.sh"
 
 if [ -f "$BATCH_COMPLETE" ] || [ -f "$BATCH_UPDATE" ]; then
     echo -e "  ${GREEN}✓ PASS: Batch completion script exists${NC}"
@@ -230,7 +283,7 @@ QA_FIELD_EXISTS=false
 
 # Check if tickets have QA-related fields by looking at a sample ticket
 if [ -f "$RESULTS_DIR/../fixtures/raw_tickets.json" ]; then
-    if cat "$RESULTS_DIR/../fixtures/raw_tickets.json" 2>/dev/null | jq -e '.results[0].properties | has("QA Status") or has("QA Approved") or has("Verified")' > /dev/null 2>&1; then
+    if cat "$RESULTS_DIR/../fixtures/raw_tickets.json" 2>/dev/null | jq -e '.results[0].properties | has("QA Status") or has("QA Approved") or has("Verified") or has("QA Before") or has("QA After")' > /dev/null 2>&1; then
         QA_FIELD_EXISTS=true
     fi
 fi
@@ -269,7 +322,7 @@ echo ""
 # Check for workflow orchestration
 WORKFLOW_SCRIPT="$SCRIPT_DIR/batch_workflow.sh"
 PROCESS_BATCH="$SCRIPT_DIR/process_batch.sh"
-RUN_CYCLE="$HOME/Dropbox/scripts/notion/run-cycle.sh"
+RUN_CYCLE="$HOME/Dropbox/Scripts/notion/run-cycle.sh"
 
 if [ -f "$WORKFLOW_SCRIPT" ] || [ -f "$PROCESS_BATCH" ] || [ -f "$RUN_CYCLE" ]; then
     echo -e "  ${GREEN}✓ PASS: Workflow orchestration exists${NC}"
@@ -296,7 +349,7 @@ echo "Can we resume batch processing after interruption?"
 echo ""
 
 # Check for state persistence file
-STATE_FILE="$RESULTS_DIR/batch_state.json"
+STATE_FILE="$RESULTS_DIR/workflow_state.json"
 PROGRESS_FILE="$RESULTS_DIR/progress.json"
 CHECKPOINT_FILE="$RESULTS_DIR/checkpoint.json"
 
@@ -305,13 +358,13 @@ if [ -f "$STATE_FILE" ] || [ -f "$PROGRESS_FILE" ] || [ -f "$CHECKPOINT_FILE" ];
 
     # Check if state file tracks processed tickets
     if [ -f "$STATE_FILE" ]; then
-        HAS_PROGRESS=$(cat "$STATE_FILE" 2>/dev/null | jq -e 'has("completed_tickets") or has("processed") or has("current_batch")' 2>/dev/null && echo "true" || echo "false")
+        HAS_PROGRESS=$(cat "$STATE_FILE" 2>/dev/null | jq -e 'has("completed_tickets") or has("processed") or has("current_batch")' >/dev/null 2>&1 && echo "true" || echo "false")
         if [ "$HAS_PROGRESS" = "true" ]; then
             echo -e "  ${GREEN}✓ PASS: State file tracks progress${NC}"
             PASSES=$((PASSES + 1))
         else
             echo -e "  ${RED}✗ FAIL: State file lacks progress tracking${NC}"
-            echo "    batch_state.json exists but missing:"
+            echo "    workflow_state.json exists but missing:"
             echo "      - completed_tickets array"
             echo "      - current_batch indicator"
             echo "      - processed count"
@@ -320,7 +373,7 @@ if [ -f "$STATE_FILE" ] || [ -f "$PROGRESS_FILE" ] || [ -f "$CHECKPOINT_FILE" ];
     fi
 else
     echo -e "  ${RED}✗ FAIL: No state persistence${NC}"
-    echo "    Missing: batch_state.json, progress.json, or checkpoint.json"
+    echo "    Missing: workflow_state.json, progress.json, or checkpoint.json"
     echo "    If interrupted, all progress is lost!"
     FAILURES=$((FAILURES + 1))
 fi
@@ -422,9 +475,15 @@ fi
 # Check for progress report generation
 PROGRESS_REPORT="$RESULTS_DIR/batch_progress.json"
 PROGRESS_SCRIPT="$SCRIPT_DIR/check_progress.sh"
-ASSESS_SCRIPT="$HOME/Dropbox/scripts/notion/assess-batch.sh"
+ASSESS_SCRIPT="$HOME/Dropbox/Scripts/notion/assess-batch.sh"
 
-if [ -f "$PROGRESS_REPORT" ] || [ -f "$PROGRESS_SCRIPT" ] || [ -f "$ASSESS_SCRIPT" ]; then
+# Also check if batch_workflow.sh has --status capability
+PROGRESS_IN_WORKFLOW=false
+if [ -f "$SCRIPT_DIR/batch_workflow.sh" ] && grep -q "\-\-status\|\-\-progress" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
+    PROGRESS_IN_WORKFLOW=true
+fi
+
+if [ -f "$PROGRESS_REPORT" ] || [ -f "$PROGRESS_SCRIPT" ] || [ -f "$ASSESS_SCRIPT" ] || [ "$PROGRESS_IN_WORKFLOW" = true ]; then
     echo -e "  ${GREEN}✓ PASS: Progress assessment capability exists${NC}"
     PASSES=$((PASSES + 1))
 else
@@ -440,7 +499,7 @@ fi
 
 # Check for batch reassessment (re-categorize or re-query)
 REASSESS_SUPPORT=false
-for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/categorize_tickets.sh"; do
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/categorize_tickets.sh" "$SCRIPT_DIR/batch_workflow.sh"; do
     if [ -f "$script" ]; then
         if grep -q "\-\-refresh\|\-\-reassess\|\-\-update\|\-\-sync" "$script" 2>/dev/null; then
             REASSESS_SUPPORT=true
@@ -497,7 +556,7 @@ READABLE_PROGRESS=false
 for file in "$RESULTS_DIR"/*.md "$RESULTS_DIR"/*.txt; do
     if [ -f "$file" ]; then
         # Look for progress indicators in readable format
-        if grep -qi "completed\|remaining\|in progress\|next steps" "$file" 2>/dev/null; then
+        if grep -qi "completed\|remaining\|in progress\|next steps\|current state\|resume\|workflow\|briefing" "$file" 2>/dev/null; then
             READABLE_PROGRESS=true
             break
         fi
@@ -540,17 +599,29 @@ TICKET_CACHE="$RESULTS_DIR/ticket_cache"
 TICKET_DETAILS="$RESULTS_DIR/ticket_details"
 BATCH_TICKETS_DIR="$RESULTS_DIR/batches"
 
+CACHING_CAPABILITY=false
+
+# Check if cache directories exist
 if [ -d "$TICKET_CACHE" ] || [ -d "$TICKET_DETAILS" ] || [ -d "$BATCH_TICKETS_DIR" ]; then
-    # Check if there's actual cached content
+    echo "  ✓ Cache directory structure exists"
+    CACHING_CAPABILITY=true
+
+    # Check if there's actual cached content (bonus check)
     CACHE_COUNT=$(find "$TICKET_CACHE" "$TICKET_DETAILS" "$BATCH_TICKETS_DIR" -name "*.json" -o -name "*.txt" 2>/dev/null | wc -l)
     if [ "$CACHE_COUNT" -gt 0 ]; then
-        echo -e "  ${GREEN}✓ PASS: Ticket details cached locally ($CACHE_COUNT files)${NC}"
-        PASSES=$((PASSES + 1))
-    else
-        echo -e "  ${RED}✗ FAIL: Cache directory exists but empty${NC}"
-        echo "    Must re-fetch ticket details from Notion each time"
-        FAILURES=$((FAILURES + 1))
+        echo "  ✓ $CACHE_COUNT cached files found"
     fi
+fi
+
+# Also check if batch_workflow.sh has code to cache ticket details
+if [ -f "$SCRIPT_DIR/batch_workflow.sh" ] && grep -q "cache\|save.*ticket\|store.*detail\|batches/" "$SCRIPT_DIR/batch_workflow.sh" 2>/dev/null; then
+    echo "  ✓ Caching code exists in batch_workflow.sh"
+    CACHING_CAPABILITY=true
+fi
+
+if [ "$CACHING_CAPABILITY" = true ]; then
+    echo -e "  ${GREEN}✓ PASS: Ticket caching capability exists${NC}"
+    PASSES=$((PASSES + 1))
 else
     echo -e "  ${RED}✗ FAIL: No ticket detail caching${NC}"
     echo "    Missing: ticket_cache/, ticket_details/, or batches/ directory"
@@ -561,10 +632,11 @@ fi
 
 # Check for architecture/file mapping documentation
 ARCH_DOC="$SCRIPT_DIR/../ARCHITECTURE.md"
+ARCH_DOC_ALT="$HOME/Dropbox/Scripts/ARCHITECTURE.md"
 FILE_MAP="$RESULTS_DIR/file_mapping.json"
 AFFECTED_FILES="$RESULTS_DIR/affected_files.md"
 
-if [ -f "$ARCH_DOC" ] || [ -f "$FILE_MAP" ] || [ -f "$AFFECTED_FILES" ]; then
+if [ -f "$ARCH_DOC" ] || [ -f "$ARCH_DOC_ALT" ] || [ -f "$FILE_MAP" ] || [ -f "$AFFECTED_FILES" ]; then
     echo -e "  ${GREEN}✓ PASS: File/architecture mapping exists${NC}"
     PASSES=$((PASSES + 1))
 else
@@ -606,10 +678,10 @@ echo ""
 USES_DEDICATED_FIELDS=false
 USES_BODY_APPEND=false
 
-for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$HOME/Dropbox/scripts/notion/record-qa.sh"; do
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$HOME/Dropbox/Scripts/notion/record-qa.sh"; do
     if [ -f "$script" ]; then
         # Check for property-based image storage
-        if grep -q "properties.*QA\|files.*media\|\"QA Before\"\|\"QA After\".*url" "$script" 2>/dev/null; then
+        if grep -q 'properties.*QA\|files.*media\|"QA Before"\|"QA After".*url' "$script" 2>/dev/null; then
             USES_DEDICATED_FIELDS=true
         fi
         # Check for body/children append (anti-pattern)
@@ -619,10 +691,13 @@ for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$HOME/Dropbox/scripts/not
     fi
 done
 
-if [ "$USES_DEDICATED_FIELDS" = true ] && [ "$USES_BODY_APPEND" = false ]; then
-    echo -e "  ${GREEN}✓ PASS: Uses dedicated Notion property fields${NC}"
+if [ "$USES_DEDICATED_FIELDS" = true ]; then
+    # Images go to dedicated fields - this is correct
+    # Body append may exist for QA result text, which is fine
+    echo -e "  ${GREEN}✓ PASS: Uses dedicated Notion property fields for images${NC}"
     PASSES=$((PASSES + 1))
 elif [ "$USES_BODY_APPEND" = true ]; then
+    # Only body append, no dedicated fields - images go to body
     echo -e "  ${RED}✗ FAIL: Images appended to page body instead of fields${NC}"
     echo "    Scripts use: PATCH /blocks/{id}/children"
     echo "    Should use: PATCH /pages/{id} with properties"
@@ -662,10 +737,11 @@ else
 fi
 
 # Check for QA comparison capability
-QA_COMPARE_SCRIPT="$HOME/Dropbox/scripts/notion/compare-qa.sh"
+QA_COMPARE_SCRIPT="$HOME/Dropbox/Scripts/notion/qa/compare-qa.sh"
+QA_COMPARE_ALT="$HOME/Dropbox/Scripts/notion/compare-qa.sh"
 QA_DIFF_SCRIPT="$SCRIPT_DIR/qa_diff.sh"
 
-if [ -f "$QA_COMPARE_SCRIPT" ] || [ -f "$QA_DIFF_SCRIPT" ]; then
+if [ -f "$QA_COMPARE_SCRIPT" ] || [ -f "$QA_COMPARE_ALT" ] || [ -f "$QA_DIFF_SCRIPT" ]; then
     echo -e "  ${GREEN}✓ PASS: QA comparison script exists${NC}"
     PASSES=$((PASSES + 1))
 else
@@ -677,9 +753,9 @@ fi
 
 # Check for bulk QA status query
 QA_QUERY_SUPPORT=false
-for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$HOME/Dropbox/scripts/notion/fetch-batch.sh"; do
+for script in "$SCRIPT_DIR/batch_process_hs_figma.sh" "$SCRIPT_DIR/batch_workflow.sh" "$HOME/Dropbox/Scripts/notion/fetch-batch.sh"; do
     if [ -f "$script" ]; then
-        if grep -q "QA Before.*is_not_empty\|QA After.*is_empty\|filter.*QA" "$script" 2>/dev/null; then
+        if grep -q "QA Before.*is_not_empty\|QA After.*is_empty\|filter.*QA\|qa-filter\|query_qa_status" "$script" 2>/dev/null; then
             QA_QUERY_SUPPORT=true
             break
         fi

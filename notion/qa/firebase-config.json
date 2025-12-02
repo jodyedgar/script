@@ -1,0 +1,7 @@
+{
+  "projectId": "bucky-app-355a3",
+  "storageBucket": "bucky-app-355a3.firebasestorage.app",
+  "apiKey": "AIzaSyC8l2OtvO3lFwMSGQUUYRK8Z25iN-xKxDw",
+  "firestoreCollection": "qa_screenshots",
+  "storageBasePath": "qa-screenshots"
+}

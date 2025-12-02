@@ -1,0 +1,18 @@
+{
+  "name": "bucky-qa-screenshots",
+  "version": "1.0.0",
+  "description": "QA screenshot management for Bucky App - Firebase Storage + Notion integration",
+  "type": "module",
+  "scripts": {
+    "upload": "node upload-screenshot.js",
+    "capture": "node capture-screenshot.js",
+    "record-qa": "node record-qa.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
+    "sharp": "^0.34.5",
+    "ws": "^8.16.0"
+  }
+}
