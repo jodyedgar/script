@@ -269,6 +269,52 @@ extract_feedbucket_url() {
     echo "$FEEDBUCKET_URL"
 }
 
+# Extract Feedbucket metadata (viewport, page URL) from ticket content
+# Returns JSON: {"viewport": "1442x1056", "page_url": "https://...", "image_url": "https://..."}
+extract_feedbucket_metadata() {
+    local PAGE_ID="$1"
+
+    # Get page content blocks
+    BLOCKS_RESPONSE=$(curl -s -X GET "https://api.notion.com/v1/blocks/$PAGE_ID/children?page_size=100" \
+        -H "Authorization: Bearer $NOTION_API_KEY" \
+        -H "Notion-Version: 2022-06-28")
+
+    # Extract all text content to find Feedbucket metadata
+    ALL_TEXT=$(echo "$BLOCKS_RESPONSE" | jq -r '
+        [.results[] |
+            if .type == "paragraph" then
+                [.paragraph.rich_text[]?.plain_text] | join("")
+            elif .type == "bulleted_list_item" then
+                [.bulleted_list_item.rich_text[]?.plain_text] | join("")
+            elif .type == "quote" then
+                [.quote.rich_text[]?.plain_text] | join("")
+            else
+                ""
+            end
+        ] | join("\n")
+    ')
+
+    # Extract Feedbucket image URL
+    FEEDBUCKET_IMAGE=$(echo "$BLOCKS_RESPONSE" | jq -r '
+        .results[] |
+        select(.type == "image") |
+        (.image.external.url // .image.file.url)
+    ' | grep -i "feedbucket\|cdn.feedbucket" | head -1)
+
+    # Extract viewport (format: "Viewport: \n1442x1056" or "Viewport:\n1442x1056")
+    VIEWPORT=$(echo "$ALL_TEXT" | grep -A1 "Viewport:" | grep -oE '[0-9]+x[0-9]+' | head -1)
+
+    # Extract page URL (look for "Page:" followed by URL)
+    PAGE_URL=$(echo "$ALL_TEXT" | grep -A1 "Page:" | grep -oE 'https?://[^ ]+' | head -1)
+
+    # Output JSON
+    jq -n \
+        --arg viewport "$VIEWPORT" \
+        --arg page_url "$PAGE_URL" \
+        --arg image_url "$FEEDBUCKET_IMAGE" \
+        '{viewport: $viewport, page_url: $page_url, image_url: $image_url}'
+}
+
 # Upload file to Firebase Storage via Node.js script
 upload_to_firebase() {
     local FILE_OR_URL="$1"
@@ -413,16 +459,46 @@ record_qa_for_ticket() {
     if [ "$DO_CAPTURE_AFTER" = "true" ]; then
         echo -e "  ${BLUE}Capturing Chrome screenshot...${NC}"
 
+        # Extract Feedbucket metadata to match viewport and page URL
+        echo -e "  ${BLUE}Extracting Feedbucket metadata...${NC}"
+        FB_METADATA=$(extract_feedbucket_metadata "$PAGE_ID")
+        FB_VIEWPORT=$(echo "$FB_METADATA" | jq -r '.viewport // empty')
+        FB_PAGE_URL=$(echo "$FB_METADATA" | jq -r '.page_url // empty')
+
+        if [ -n "$FB_VIEWPORT" ]; then
+            echo -e "  ${GREEN}✓ Viewport: $FB_VIEWPORT${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ No viewport found in ticket${NC}"
+        fi
+
+        if [ -n "$FB_PAGE_URL" ]; then
+            echo -e "  ${GREEN}✓ Page URL: $FB_PAGE_URL${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ No page URL found in ticket${NC}"
+        fi
+
         # Create temp file for screenshot
         CAPTURE_FILE="/tmp/qa-capture-${TICKET}-$(date +%s).png"
 
-        # Run capture script
-        CAPTURE_RESULT=$(cd "$QA_DIR" && node capture-screenshot.js --output "$CAPTURE_FILE" 2>&1)
+        # Build capture arguments - always use full page for QA After
+        CAPTURE_ARGS=("--output" "$CAPTURE_FILE" "--full-page")
+
+        if [ -n "$FB_VIEWPORT" ]; then
+            CAPTURE_ARGS+=("--viewport" "$FB_VIEWPORT")
+        fi
+
+        if [ -n "$FB_PAGE_URL" ]; then
+            CAPTURE_ARGS+=("--url" "$FB_PAGE_URL")
+        fi
+
+        # Run capture script with all options
+        echo -e "  ${BLUE}Running: node capture-screenshot.js ${CAPTURE_ARGS[*]}${NC}"
+        CAPTURE_RESULT=$(cd "$QA_DIR" && node capture-screenshot.js "${CAPTURE_ARGS[@]}" 2>&1)
 
         if [ -f "$CAPTURE_FILE" ]; then
             # Parse capture result for page info
             PAGE_TITLE=$(echo "$CAPTURE_RESULT" | grep -o '"title":"[^"]*"' | cut -d'"' -f4 || echo "Chrome")
-            echo -e "  ${GREEN}✓ Captured: $PAGE_TITLE${NC}"
+            echo -e "  ${GREEN}✓ Captured: $PAGE_TITLE (full page)${NC}"
 
             # Upload to Firebase
             AFTER_UPLOAD_URL=$(upload_to_firebase "$CAPTURE_FILE" "$TICKET" "after" "$PAGE_ID")

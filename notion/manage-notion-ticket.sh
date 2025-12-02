@@ -4,7 +4,7 @@
 # Usage: ./manage-notion-ticket.sh TICK-ID [OPTIONS]
 #
 # Options:
-#   --status, -s STATUS          Set ticket status (e.g., "Complete", "In Progress")
+#   --status, -s STATUS          Set ticket status (e.g., "In Review", "In Progress")
 #   --pr-url, -p URL            Set GitHub PR URL
 #   --theme-id, -t ID           Set Shopify Theme Preview ID
 #   --summary, --notes, -n TEXT  Append summary/notes to ticket (supports markdown)
@@ -13,12 +13,12 @@
 #   --qa-after-file FILE         Upload specific file as QA After
 #
 # Examples:
-#   ./manage-notion-ticket.sh TICK-1166 --status Complete --summary "Fixed the issue"
+#   ./manage-notion-ticket.sh TICK-1166 --status "In Review" --summary "Fixed the issue"
 #   ./manage-notion-ticket.sh TICK-1166 --pr-url https://github.com/org/repo/pull/123
 #   ./manage-notion-ticket.sh TICK-1166 --status "In Progress" --notes "Working on feature X"
 #   ./manage-notion-ticket.sh TICK-1166 --theme-id 181781889340
 #   ./manage-notion-ticket.sh TICK-1166 --qa-before --qa-after
-#   ./manage-notion-ticket.sh TICK-1166 --status Complete --qa-before --qa-after-file ./screenshot.png
+#   ./manage-notion-ticket.sh TICK-1166 --status "In Review" --qa-before --qa-after-file ./screenshot.png
 
 # Tickets database ID
 TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
@@ -34,7 +34,7 @@ show_usage() {
     echo "Usage: $0 TICKET-ID [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --status, -s STATUS          Set ticket status (e.g., 'Complete', 'In Progress')"
+    echo "  --status, -s STATUS          Set ticket status (e.g., 'In Review', 'In Progress')"
     echo "  --pr-url, -p URL            Set GitHub PR URL"
     echo "  --theme-id, -t ID           Set Shopify Theme Preview ID"
     echo "  --summary, --notes, -n TEXT  Append summary/notes to ticket (supports markdown)"

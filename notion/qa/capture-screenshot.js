@@ -19,8 +19,10 @@ function parseArgs() {
   const parsed = {
     output: './screenshot.png',
     fullPage: false,
+    viewport: null, // { width, height } - resize viewport before capture
+    url: null, // Navigate to URL before capture
     ports: [9222, 9223, 9224, 9225, 9229], // Try multiple common ports
-    useFallback: true // Use macOS screencapture as fallback
+    useFallback: false // Disabled - macOS screencapture captures wrong monitor
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -28,6 +30,17 @@ function parseArgs() {
       parsed.output = args[++i];
     } else if (args[i] === '--full-page' || args[i] === '-f') {
       parsed.fullPage = true;
+    } else if (args[i] === '--viewport' || args[i] === '-v') {
+      // Parse viewport as WIDTHxHEIGHT (e.g., 1442x1056)
+      const dims = args[++i].split('x').map(n => parseInt(n, 10));
+      if (dims.length === 2 && !isNaN(dims[0]) && !isNaN(dims[1])) {
+        parsed.viewport = { width: dims[0], height: dims[1] };
+      } else {
+        console.error(`Invalid viewport format: ${args[i]}. Use WIDTHxHEIGHT (e.g., 1442x1056)`);
+        process.exit(1);
+      }
+    } else if (args[i] === '--url' || args[i] === '-u') {
+      parsed.url = args[++i];
     } else if (args[i] === '--port' || args[i] === '-p') {
       parsed.ports = [parseInt(args[++i], 10)];
     } else if (args[i] === '--no-fallback') {
@@ -37,14 +50,16 @@ function parseArgs() {
 Capture Screenshot from Chrome DevTools
 
 Usage:
-  node capture-screenshot.js --output <path> [--full-page]
+  node capture-screenshot.js --output <path> [--full-page] [--viewport WxH] [--url URL]
 
 Options:
-  --output, -o PATH    Output file path (default: ./screenshot.png)
-  --full-page, -f      Capture full page instead of viewport
-  --port, -p PORT      Chrome DevTools port (default: tries 9222-9225, 9229)
-  --no-fallback        Don't fall back to macOS screencapture
-  --help, -h           Show this help message
+  --output, -o PATH      Output file path (default: ./screenshot.png)
+  --full-page, -f        Capture full page instead of viewport
+  --viewport, -v WxH     Resize viewport before capture (e.g., 1442x1056)
+  --url, -u URL          Navigate to URL before capture
+  --port, -p PORT        Chrome DevTools port (default: tries 9222-9225, 9229)
+  --no-fallback          Don't fall back to macOS screencapture
+  --help, -h             Show this help message
 
 Requirements:
   Chrome must be running with remote debugging:
@@ -160,12 +175,34 @@ async function captureWithChrome(args, chromeInfo) {
     throw new Error('No suitable page found in Chrome');
   }
 
-  console.error(`Capturing: ${page.title} (${page.url})`);
+  console.error(`Connecting to: ${page.title} (${page.url})`);
 
   // Connect to the page
   const ws = await connectToPage(page.webSocketDebuggerUrl);
 
   try {
+    // Set viewport if specified (must be done BEFORE navigation)
+    if (args.viewport) {
+      console.error(`Setting viewport: ${args.viewport.width}x${args.viewport.height}`);
+      await sendCommand(ws, 'Emulation.setDeviceMetricsOverride', {
+        width: args.viewport.width,
+        height: args.viewport.height,
+        deviceScaleFactor: 1,
+        mobile: args.viewport.width < 768
+      });
+    }
+
+    // Navigate to URL if specified
+    if (args.url) {
+      console.error(`Navigating to: ${args.url}`);
+      await sendCommand(ws, 'Page.enable');
+      await sendCommand(ws, 'Page.navigate', { url: args.url });
+      // Wait for page load
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Update page info for result
+      page.url = args.url;
+    }
+
     // Get page dimensions if full page capture
     if (args.fullPage) {
       const { result } = await sendCommand(ws, 'Runtime.evaluate', {
@@ -173,16 +210,25 @@ async function captureWithChrome(args, chromeInfo) {
         returnByValue: true
       });
       const dims = JSON.parse(result.value);
+      console.error(`Full page dimensions: ${dims.width}x${dims.height}`);
 
       await sendCommand(ws, 'Emulation.setDeviceMetricsOverride', {
-        width: dims.width,
+        width: args.viewport ? args.viewport.width : dims.width,
         height: dims.height,
         deviceScaleFactor: 1,
-        mobile: false
+        mobile: args.viewport ? args.viewport.width < 768 : false
       });
     }
 
+    // Scroll to top before capture
+    await sendCommand(ws, 'Runtime.evaluate', {
+      expression: 'window.scrollTo(0, 0)',
+      returnByValue: true
+    });
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     // Take screenshot
+    console.error(`Capturing screenshot...`);
     const screenshot = await sendCommand(ws, 'Page.captureScreenshot', {
       format: args.output.endsWith('.jpg') || args.output.endsWith('.jpeg') ? 'jpeg' : 'png',
       quality: 90,
@@ -190,7 +236,7 @@ async function captureWithChrome(args, chromeInfo) {
     });
 
     // Reset viewport if we changed it
-    if (args.fullPage) {
+    if (args.fullPage || args.viewport) {
       await sendCommand(ws, 'Emulation.clearDeviceMetricsOverride');
     }
 
@@ -203,6 +249,8 @@ async function captureWithChrome(args, chromeInfo) {
       method: 'chrome-devtools',
       file: args.output,
       size: buffer.length,
+      viewport: args.viewport,
+      fullPage: args.fullPage,
       page: {
         title: page.title,
         url: page.url
