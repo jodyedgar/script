@@ -14,7 +14,7 @@ PROJECT_ROOT=""
 #######################################
 # Show help
 #######################################
-show_help() {
+show_usage() {
     show_help "necro-inventory" \
         "Generate comprehensive project inventory scan" \
         "necro inventory [options]" \
@@ -112,19 +112,24 @@ scan_js_files() {
         return
     fi
 
+    local dirs_array=()
     while IFS= read -r dir; do
+        [[ -n "$dir" ]] && dirs_array+=("$dir")
+    done <<< "$dirs"
+
+    for dir in "${dirs_array[@]}"; do
         local rel_dir="${dir#$PROJECT_ROOT/}"
         [[ "$rel_dir" == "$PROJECT_ROOT" ]] && rel_dir="."
 
         echo "### $rel_dir/" >> "$output"
 
-        find "$dir" -maxdepth 1 -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) 2>/dev/null | sort | while read -r file; do
+        while IFS= read -r -d '' file; do
             local filename=$(basename "$file")
             local size=$(get_file_size "$file")
             echo "- \`$filename\` ($size)" >> "$output"
-        done
+        done < <(find "$dir" -maxdepth 1 -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) -print0 2>/dev/null | sort -z)
         echo "" >> "$output"
-    done <<< "$dirs"
+    done
 }
 
 #######################################
@@ -208,15 +213,7 @@ scan_old_files() {
     fi
 
     local found=false
-    find "$PROJECT_ROOT" -type f \
-        ! -path "*/node_modules/*" \
-        ! -path "*/.git/*" \
-        ! -path "*/dist/*" \
-        ! -path "*/build/*" \
-        ! -path "*/deprecated/*" \
-        ! -name "package-lock.json" \
-        2>/dev/null | while read -r file; do
-
+    while IFS= read -r -d '' file; do
         local file_date
         if [[ "$OSTYPE" == "darwin"* ]]; then
             file_date=$(stat -f "%m" "$file" 2>/dev/null)
@@ -230,7 +227,14 @@ scan_old_files() {
             local date=$(get_file_date "$file")
             echo "- \`$rel_path\` - Last modified: $date" >> "$output"
         fi
-    done
+    done < <(find "$PROJECT_ROOT" -type f \
+        ! -path "*/node_modules/*" \
+        ! -path "*/.git/*" \
+        ! -path "*/dist/*" \
+        ! -path "*/build/*" \
+        ! -path "*/deprecated/*" \
+        ! -name "package-lock.json" \
+        -print0 2>/dev/null)
 
     if [[ "$found" == false ]]; then
         echo "No files found older than $days days." >> "$output"
@@ -407,13 +411,13 @@ main() {
                 shift 2
                 ;;
             --help|-h)
-                show_help
+                show_usage
                 exit 0
                 ;;
             *)
                 log_error "Unknown option: $1"
                 echo ""
-                show_help
+                show_usage
                 exit 1
                 ;;
         esac

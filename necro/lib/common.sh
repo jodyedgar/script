@@ -98,8 +98,8 @@ confirm() {
     echo -ne "${YELLOW}${prompt}${NC}"
     read -r response
 
-    # Convert to lowercase
-    response="${response,,}"
+    # Convert to lowercase (compatible with bash 3.x on macOS)
+    response="$(echo "$response" | tr '[:upper:]' '[:lower:]')"
 
     # Check response
     if [[ -z "$response" ]]; then
@@ -120,29 +120,13 @@ confirm() {
 get_project_root() {
     local current_dir="$PWD"
 
-    # Check for .necro directory first
+    # Walk up from CWD, checking all indicators at each level.
+    # This finds the closest project root rather than the first
+    # .necro that might exist high up the tree (e.g., ~/).
     while [[ "$current_dir" != "/" ]]; do
-        if [[ -d "$current_dir/.necro" ]]; then
-            echo "$current_dir"
-            return 0
-        fi
-        current_dir="$(dirname "$current_dir")"
-    done
-
-    # Reset and check for .git
-    current_dir="$PWD"
-    while [[ "$current_dir" != "/" ]]; do
-        if [[ -d "$current_dir/.git" ]]; then
-            echo "$current_dir"
-            return 0
-        fi
-        current_dir="$(dirname "$current_dir")"
-    done
-
-    # Reset and check for package.json
-    current_dir="$PWD"
-    while [[ "$current_dir" != "/" ]]; do
-        if [[ -f "$current_dir/package.json" ]]; then
+        if [[ -d "$current_dir/.necro" ]] || \
+           [[ -d "$current_dir/.git" ]] || \
+           [[ -f "$current_dir/package.json" ]]; then
             echo "$current_dir"
             return 0
         fi
