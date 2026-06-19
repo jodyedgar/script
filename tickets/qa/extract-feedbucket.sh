@@ -1,30 +1,21 @@
 #!/bin/bash
 
-# Extract Feedbucket image URL from a Notion ticket
-# Usage: ./extract-feedbucket-image.sh TICK-### [--download] [--output FILE]
+# Extract Feedbucket image URL from a ticket (Firestore-backed)
+# Usage: ./extract-feedbucket.sh TICK-### [--download] [--output FILE]
 #
 # Returns the Feedbucket image URL for use in QA Before workflow
 # With --download, saves the image to a local file
 
 set -e
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Notion config
-TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
-
-# Script directory
+# Source shared library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../_firestore-lib.sh"
 
 show_usage() {
     echo "Usage: $0 TICKET-ID [OPTIONS]"
     echo ""
-    echo "Extract Feedbucket image URL from a Notion ticket."
+    echo "Extract Feedbucket image URL from a ticket."
     echo ""
     echo "Options:"
     echo "  --download, -d       Download the image to local file"
@@ -79,28 +70,12 @@ if [ -z "$TICKET_ID" ]; then
     show_usage
 fi
 
-# Load Notion credentials
-if [ -f "$HOME/.bash_profile" ]; then
-    source "$HOME/.bash_profile"
-fi
+# Query Firestore
+QUERY_RESULT=$(query_ticket "$TICKET_ID")
 
-if [ -z "$NOTION_API_KEY" ]; then
-    echo -e "${RED}Error: NOTION_API_KEY not set${NC}" >&2
-    exit 1
-fi
+DOC_NAME=$(echo "$QUERY_RESULT" | jq -r '.[0].document.name // empty')
 
-TICKET_NUMBER=$(echo "$TICKET_ID" | sed 's/TICK-//')
-
-# Look up page ID
-DATABASE_QUERY=$(curl -s -X POST "https://api.notion.com/v1/databases/$TICKETS_DATABASE_ID/query" \
-    -H "Authorization: Bearer $NOTION_API_KEY" \
-    -H "Notion-Version: 2022-06-28" \
-    -H "Content-Type: application/json" \
-    -d "{\"filter\": {\"property\": \"ID\", \"unique_id\": {\"equals\": $TICKET_NUMBER}}}")
-
-PAGE_ID=$(echo "$DATABASE_QUERY" | jq -r '.results[0].id // empty' | tr -d '-')
-
-if [ -z "$PAGE_ID" ]; then
+if [ -z "$DOC_NAME" ]; then
     if [ "$OUTPUT_JSON" = "true" ]; then
         echo '{"error": "Ticket not found", "ticket": "'"$TICKET_ID"'"}'
     else
@@ -109,49 +84,33 @@ if [ -z "$PAGE_ID" ]; then
     exit 1
 fi
 
-# Get page content blocks to find Feedbucket media
-BLOCKS_RESPONSE=$(curl -s -X GET "https://api.notion.com/v1/blocks/$PAGE_ID/children?page_size=100" \
-    -H "Authorization: Bearer $NOTION_API_KEY" \
-    -H "Notion-Version: 2022-06-28")
+DOC_PATH=$(echo "$DOC_NAME" | sed "s|.*/documents/||")
 
-# Look for image blocks with Feedbucket URLs
-FEEDBUCKET_URL=$(echo "$BLOCKS_RESPONSE" | jq -r '
-    .results[] |
-    select(.type == "image" or .type == "file" or .type == "video") |
-    if .type == "image" then
-        (.image.external.url // .image.file.url)
-    elif .type == "video" then
-        (.video.external.url // .video.file.url)
-    else
-        (.file.external.url // .file.file.url)
-    end
-' | grep -i "feedbucket\|fb-media\|feedback" | head -1)
+# Get content and screenshots fields
+CONTENT=$(fs_string "$QUERY_RESULT" "content")
+SCREENSHOTS=$(fs_array "$QUERY_RESULT" "screenshots")
+
+# Look for Feedbucket URLs in content
+FEEDBUCKET_URL=""
+if [ -n "$CONTENT" ]; then
+    FEEDBUCKET_URL=$(echo "$CONTENT" | grep -oE 'https://[^ ]*(feedbucket|fb-media|cdn\.feedbucket)[^ ]*' | head -1 || true)
+fi
+
+# Fallback: check screenshots array
+if [ -z "$FEEDBUCKET_URL" ] && [ -n "$SCREENSHOTS" ]; then
+    FEEDBUCKET_URL=$(echo "$SCREENSHOTS" | grep -i "feedbucket\|fb-media" | head -1 || true)
+fi
 
 MEDIA_TYPE="image"
 
-# If not found in blocks, check the Feedbucket Media property
-if [ -z "$FEEDBUCKET_URL" ]; then
-    PAGE_RESPONSE=$(curl -s -X GET "https://api.notion.com/v1/pages/$PAGE_ID" \
-        -H "Authorization: Bearer $NOTION_API_KEY" \
-        -H "Notion-Version: 2022-06-28")
-
-    FEEDBUCKET_URL=$(echo "$PAGE_RESPONSE" | jq -r '
-        .properties["Feedbucket Media"].files[0].external.url //
-        .properties["Feedbucket Media"].files[0].file.url //
-        .properties["Screenshot"].files[0].external.url //
-        .properties["Screenshot"].files[0].file.url //
-        empty
-    ')
-fi
-
 # Check for video content
-if echo "$FEEDBUCKET_URL" | grep -qi "\.mp4\|\.webm\|\.mov\|video"; then
+if [ -n "$FEEDBUCKET_URL" ] && echo "$FEEDBUCKET_URL" | grep -qi "\.mp4\|\.webm\|\.mov\|video"; then
     MEDIA_TYPE="video"
 fi
 
 if [ -z "$FEEDBUCKET_URL" ]; then
     if [ "$OUTPUT_JSON" = "true" ]; then
-        echo '{"error": "No Feedbucket media found", "ticket": "'"$TICKET_ID"'", "page_id": "'"$PAGE_ID"'"}'
+        echo '{"error": "No Feedbucket media found", "ticket": "'"$TICKET_ID"'", "doc_path": "'"$DOC_PATH"'"}'
     else
         echo -e "${RED}Error: No Feedbucket media found in $TICKET_ID${NC}" >&2
     fi
@@ -185,7 +144,7 @@ if [ "$DO_DOWNLOAD" = "true" ]; then
         if [ "$OUTPUT_JSON" = "true" ]; then
             echo '{"success": true, "url": "'"$FEEDBUCKET_URL"'", "file": "'"$OUTPUT_FILE"'", "size": '"$FILE_SIZE"', "type": "'"$MEDIA_TYPE"'", "ticket": "'"$TICKET_ID"'"}'
         else
-            echo -e "${GREEN}✓ Downloaded: $OUTPUT_FILE ($FILE_SIZE bytes)${NC}"
+            echo -e "${GREEN}Downloaded: $OUTPUT_FILE ($FILE_SIZE bytes)${NC}"
         fi
     else
         if [ "$OUTPUT_JSON" = "true" ]; then
@@ -198,7 +157,7 @@ if [ "$DO_DOWNLOAD" = "true" ]; then
 else
     # Just output the URL
     if [ "$OUTPUT_JSON" = "true" ]; then
-        echo '{"url": "'"$FEEDBUCKET_URL"'", "type": "'"$MEDIA_TYPE"'", "ticket": "'"$TICKET_ID"'", "page_id": "'"$PAGE_ID"'"}'
+        echo '{"url": "'"$FEEDBUCKET_URL"'", "type": "'"$MEDIA_TYPE"'", "ticket": "'"$TICKET_ID"'", "doc_path": "'"$DOC_PATH"'"}'
     else
         echo "$FEEDBUCKET_URL"
     fi

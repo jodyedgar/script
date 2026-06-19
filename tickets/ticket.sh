@@ -96,12 +96,304 @@ show_usage() {
     echo "Examples:"
     echo "  $0 TICK-1234"
     echo "  $0 TICK-1234 --status 'In Review' --qa-before --qa-after --summary 'Fixed the bug'"
+    echo ""
+    echo "Create a new ticket:"
+    echo "  $0 --create --channel <slack-channel> --name 'Title' [options]"
+    echo "  (run '$0 --create --help' for create-mode options)"
     exit 1
+}
+
+create_usage() {
+    echo "Usage: $0 --create --channel <slack-channel> --name 'Title' [OPTIONS]"
+    echo ""
+    echo "Create a new ticket in the 'tickets' collection. The client/project is"
+    echo "resolved from the Slack channel. TICK-N is minted by the server trigger."
+    echo ""
+    echo "Required:"
+    echo "  --channel, -c CHANNEL    Client Slack channel (with or without '#')"
+    echo "  --name, -N TEXT          Ticket title"
+    echo ""
+    echo "Content:"
+    echo "  --description, -d TEXT    Ticket body (plain text)"
+    echo "  --description-file, -D F  Read ticket body from file (e.g. a brief)"
+    echo ""
+    echo "Optional:"
+    echo "  --status, -s STATUS      Status (default: Backlog)"
+    echo "  --client-id ID           Use this client directly (skip channel lookup / disambiguate)"
+    echo "  --project-id ID          Disambiguate when client has multiple projects"
+    echo "  --rush                   Mark as a rush order"
+    echo "  --page-url URL           Page being worked on"
+    echo "  --attach, -a FILE        Upload & attach a file (repeatable; PDF, source, image...)"
+    echo "  --dry-run                Resolve + print the payload, write nothing"
+    echo ""
+    echo "Examples:"
+    echo "  $0 --create -c jjbean -N 'Fix mobile header overlap' -d 'Logo overlaps nav under 480px'"
+    echo "  $0 --create -c sixhats -N 'New FAQ section' -D ./brief.md -a ./mockup.pdf --rush"
+    exit 1
+}
+
+# ============================================================
+# CREATE MODE
+# ============================================================
+run_create_mode() {
+    local NAME="" CHANNEL="" DESCRIPTION="" DESCRIPTION_FILE=""
+    local STATUS="Backlog" PROJECT_ID_OVERRIDE="" CLIENT_ID_OVERRIDE="" PAGE_URL="" RUSH=false DRY_RUN=false
+    local ATTACHMENTS=()
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --name|-N) NAME="$2"; shift 2 ;;
+            --channel|-c) CHANNEL="$2"; shift 2 ;;
+            --description|-d) DESCRIPTION="$2"; shift 2 ;;
+            --description-file|-D) DESCRIPTION_FILE="$2"; shift 2 ;;
+            --status|-s) STATUS="$2"; shift 2 ;;
+            --project-id) PROJECT_ID_OVERRIDE="$2"; shift 2 ;;
+            --client-id) CLIENT_ID_OVERRIDE="$2"; shift 2 ;;
+            --page-url) PAGE_URL="$2"; shift 2 ;;
+            --rush) RUSH=true; shift ;;
+            --attach|-a) ATTACHMENTS+=("$2"); shift 2 ;;
+            --dry-run) DRY_RUN=true; shift ;;
+            --help|-h) create_usage ;;
+            *) echo -e "${RED}Error: Unknown create option: $1${NC}"; create_usage ;;
+        esac
+    done
+
+    # Validate required
+    [ -z "$CHANNEL" ] && [ -z "$CLIENT_ID_OVERRIDE" ] && echo -e "${RED}Error: --channel (or --client-id) is required${NC}" && create_usage
+    [ -z "$NAME" ] && echo -e "${RED}Error: --name is required${NC}" && create_usage
+
+    # Build content (description text + optional file)
+    local CONTENT="$DESCRIPTION"
+    if [ -n "$DESCRIPTION_FILE" ]; then
+        if [ ! -f "$DESCRIPTION_FILE" ]; then
+            echo -e "${RED}Error: description file not found: $DESCRIPTION_FILE${NC}"; exit 1
+        fi
+        local FILE_BODY=$(cat "$DESCRIPTION_FILE")
+        if [ -n "$CONTENT" ]; then CONTENT="$CONTENT
+
+$FILE_BODY"; else CONTENT="$FILE_BODY"; fi
+    fi
+
+    # Validate attachment files exist up front
+    local f
+    for f in "${ATTACHMENTS[@]}"; do
+        [ ! -f "$f" ] && echo -e "${RED}Error: attachment not found: $f${NC}" && exit 1
+    done
+
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}Create Ticket${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo ""
+
+    # ---- Resolve client (by --client-id override, else by Slack channel) ----
+    local CLIENT_ID="" CLIENT_NAME="" COMPANY=""
+    if [ -n "$CLIENT_ID_OVERRIDE" ]; then
+        local CDOC=$(get_client_by_id "$CLIENT_ID_OVERRIDE")
+        if ! echo "$CDOC" | jq -e '.fields' >/dev/null 2>&1; then
+            echo -e "${RED}Error: client '$CLIENT_ID_OVERRIDE' not found${NC}"; exit 1
+        fi
+        CLIENT_ID="$CLIENT_ID_OVERRIDE"
+        CLIENT_NAME=$(echo "$CDOC" | jq -r '.fields.name.stringValue // empty')
+        COMPANY=$(echo "$CDOC" | jq -r '.fields.companyName.stringValue // empty')
+    else
+        local CH=$(normalize_channel "$CHANNEL")
+        echo "Resolving Slack channel: #$CH ..."
+        local CLIENT_RESULT=$(query_clients_by_slack_channel "$CH")
+        local CLIENT_COUNT=$(echo "$CLIENT_RESULT" | jq -r '[.[] | select(.document)] | length' 2>/dev/null || echo 0)
+        if [ "$CLIENT_COUNT" -eq 0 ]; then
+            echo -e "${RED}Error: No client found for Slack channel '#$CH'.${NC}"
+            echo "Check the channel name, or add it to the client's slackChannels in Bucky."
+            exit 1
+        elif [ "$CLIENT_COUNT" -gt 1 ]; then
+            echo -e "${YELLOW}Channel '#$CH' matches $CLIENT_COUNT clients. Re-run with --client-id <id>:${NC}"
+            echo "$CLIENT_RESULT" | jq -r '.[] | select(.document) | .document as $d | "  " + ($d.name | sub(".*/";"")) + "  -  " + (($d.fields.companyName.stringValue // $d.fields.name.stringValue) // "")'
+            exit 1
+        fi
+        CLIENT_ID=$(echo "$CLIENT_RESULT" | jq -r '.[0].document.name | sub(".*/";"")')
+        CLIENT_NAME=$(echo "$CLIENT_RESULT" | jq -r '.[0].document.fields.name.stringValue // empty')
+        COMPANY=$(echo "$CLIENT_RESULT" | jq -r '.[0].document.fields.companyName.stringValue // empty')
+    fi
+    echo -e "${GREEN}Client: ${COMPANY:-$CLIENT_NAME} ($CLIENT_ID)${NC}"
+
+    # ---- Resolve project for that client ----
+    local PROJ_RESULT=$(query_projects_by_client "$CLIENT_ID")
+    # TSV: id \t name \t storeId \t clientName
+    local PROJ_TSV=$(echo "$PROJ_RESULT" | jq -r '.[] | select(.document) | .document as $d | ($d.name | sub(".*/";"")) + "\t" + ($d.fields.name.stringValue // "") + "\t" + ($d.fields.shopifyStoreId.stringValue // "") + "\t" + ($d.fields.clientName.stringValue // "")' 2>/dev/null)
+    local PROJ_COUNT=$(echo -n "$PROJ_TSV" | grep -c . || true)
+
+    local PROJECT_ID="" PROJECT_NAME="" SHOPIFY_STORE_ID="" PROJ_CLIENT_NAME=""
+    if [ "$PROJ_COUNT" -eq 0 ]; then
+        echo -e "${YELLOW}No projects found for this client. Creating ticket linked to client only.${NC}"
+    elif [ -n "$PROJECT_ID_OVERRIDE" ]; then
+        local LINE=$(echo "$PROJ_TSV" | awk -F'\t' -v pid="$PROJECT_ID_OVERRIDE" '$1==pid')
+        [ -z "$LINE" ] && echo -e "${RED}Error: --project-id $PROJECT_ID_OVERRIDE not found for this client${NC}" && exit 1
+        PROJECT_ID=$(echo "$LINE" | cut -f1); PROJECT_NAME=$(echo "$LINE" | cut -f2)
+        SHOPIFY_STORE_ID=$(echo "$LINE" | cut -f3); PROJ_CLIENT_NAME=$(echo "$LINE" | cut -f4)
+    elif [ "$PROJ_COUNT" -eq 1 ]; then
+        PROJECT_ID=$(echo "$PROJ_TSV" | cut -f1); PROJECT_NAME=$(echo "$PROJ_TSV" | cut -f2)
+        SHOPIFY_STORE_ID=$(echo "$PROJ_TSV" | cut -f3); PROJ_CLIENT_NAME=$(echo "$PROJ_TSV" | cut -f4)
+    else
+        echo -e "${YELLOW}This client has $PROJ_COUNT projects. Re-run with --project-id <id>:${NC}"
+        echo "$PROJ_TSV" | while IFS=$'\t' read -r id pname sid cname; do
+            echo "  $id  -  $pname"
+        done
+        exit 1
+    fi
+    [ -n "$PROJECT_ID" ] && echo -e "${GREEN}Project: $PROJECT_NAME ($PROJECT_ID)${NC}"
+
+    # Prefer project's denormalized clientName when available
+    [ -n "$PROJ_CLIENT_NAME" ] && CLIENT_NAME="$PROJ_CLIENT_NAME"
+
+    # ---- Resolve Shopify store URL ----
+    local SHOPIFY_STORE_URL=""
+    if [ -n "$SHOPIFY_STORE_ID" ]; then
+        local STORE_DOC=$(get_document "shopifyStores/$SHOPIFY_STORE_ID")
+        SHOPIFY_STORE_URL=$(echo "$STORE_DOC" | jq -r '.fields.onlineStoreUrl.stringValue // .fields.myshopifyUrl.stringValue // empty' 2>/dev/null)
+        [ -n "$SHOPIFY_STORE_URL" ] && echo -e "${GREEN}Store: $SHOPIFY_STORE_URL${NC}"
+    fi
+
+    # ---- Build Firestore fields (omit ticketNumber/displayId -> trigger mints) ----
+    local NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000000Z")
+    local FIELDS=$(jq -n \
+        --arg name "$NAME" \
+        --arg status "$STATUS" \
+        --arg content "$CONTENT" \
+        --arg projectId "$PROJECT_ID" \
+        --arg projectName "$PROJECT_NAME" \
+        --arg clientId "$CLIENT_ID" \
+        --arg clientName "$CLIENT_NAME" \
+        --arg storeId "$SHOPIFY_STORE_ID" \
+        --arg storeUrl "$SHOPIFY_STORE_URL" \
+        --arg pageUrl "$PAGE_URL" \
+        --argjson rush "$RUSH" \
+        --arg now "$NOW" \
+        '
+        def s($v): if ($v|length)==0 then {nullValue:null} else {stringValue:$v} end;
+        {
+          notionPageId: {stringValue: ""},
+          name: {stringValue: $name},
+          status: {stringValue: $status},
+          projectId: s($projectId),
+          projectName: s($projectName),
+          clientId: s($clientId),
+          clientName: s($clientName),
+          shopifyStoreId: s($storeId),
+          shopifyStoreUrl: s($storeUrl),
+          creditsMin: {nullValue:null},
+          creditsMax: {nullValue:null},
+          pageUrl: s($pageUrl),
+          shopifyThemeId: {nullValue:null},
+          videoReviewUrl: {nullValue:null},
+          internalTimeEstimate: {nullValue:null},
+          internalTimeInMins: {nullValue:null},
+          ticketComplexity: {nullValue:null},
+          dueDate: {nullValue:null},
+          promisedDate: {nullValue:null},
+          rushOrder: {booleanValue: $rush},
+          qaApproved: {booleanValue: false},
+          qaBefore: {arrayValue:{values:[]}},
+          qaAfter: {arrayValue:{values:[]}},
+          content: s($content),
+          recurringTemplateId: {nullValue:null},
+          screenshots: {arrayValue:{values:[]}},
+          attachments: {arrayValue:{values:[]}},
+          clientApprover: {nullValue:null},
+          qaRequirements: {nullValue:null},
+          qaRequirementsDraft: {nullValue:null},
+          mergeInfo: {nullValue:null},
+          archivedByMerge: {nullValue:null},
+          source: {stringValue: "cli"},
+          createdAt: {timestampValue: $now},
+          updatedAt: {timestampValue: $now}
+        }')
+
+    # ---- Dry run ----
+    if [ "$DRY_RUN" = true ]; then
+        echo ""
+        echo -e "${BLUE}DRY RUN - ticket payload (no write):${NC}"
+        echo "----------------------------------------"
+        echo "Title:   $NAME"
+        echo "Status:  $STATUS"
+        echo "Rush:    $RUSH"
+        [ ${#ATTACHMENTS[@]} -gt 0 ] && echo "Attach:  ${ATTACHMENTS[*]}"
+        echo ""
+        echo "$FIELDS" | jq '.'
+        echo ""
+        echo -e "${YELLOW}Dry run only - no ticket created.${NC}"
+        return 0
+    fi
+
+    # ---- Create the document ----
+    echo ""
+    echo "Creating ticket..."
+    local CREATE_RESULT=$(create_ticket "$FIELDS")
+    local NEW_DOC_NAME=$(echo "$CREATE_RESULT" | jq -r '.name // empty' 2>/dev/null)
+    if [ -z "$NEW_DOC_NAME" ]; then
+        echo -e "${RED}Error creating ticket:${NC}"
+        echo "$CREATE_RESULT" | jq '.' 2>/dev/null || echo "$CREATE_RESULT"
+        exit 1
+    fi
+    local DOC_PATH=$(echo "$NEW_DOC_NAME" | sed "s|.*/documents/||")
+    echo -e "${GREEN}Document created: $DOC_PATH${NC}"
+
+    # ---- Wait for trigger to mint TICK-N ----
+    echo "Waiting for ticket number..."
+    local TICKET_ID=$(wait_for_display_id "$DOC_PATH")
+    if [ -z "$TICKET_ID" ]; then
+        echo -e "${YELLOW}Ticket created but number not minted yet (trigger may be cold).${NC}"
+        TICKET_ID="(pending)"
+    else
+        echo -e "${GREEN}Assigned: $TICKET_ID${NC}"
+    fi
+
+    # ---- Upload & attach files ----
+    if [ ${#ATTACHMENTS[@]} -gt 0 ]; then
+        echo ""
+        echo "Uploading ${#ATTACHMENTS[@]} attachment(s)..."
+        local QA_DIR="$SCRIPT_DIR/qa"
+        local UPLOAD_TICKET="$TICKET_ID"
+        [ "$UPLOAD_TICKET" = "(pending)" ] && UPLOAD_TICKET=$(echo "$DOC_PATH" | sed 's|.*/||')
+        local ATTACH_TEXT="Attachments:"
+        for f in "${ATTACHMENTS[@]}"; do
+            local UP=$(cd "$QA_DIR" && node upload-attachment.js --file "$f" --ticket "$UPLOAD_TICKET" 2>&1)
+            local URL=$(echo "$UP" | jq -r '.url // empty' 2>/dev/null)
+            local FNAME=$(echo "$UP" | jq -r '.name // empty' 2>/dev/null)
+            local IS_IMG=$(echo "$UP" | jq -r '.isImage // false' 2>/dev/null)
+            if [ -z "$URL" ]; then
+                echo -e "  ${YELLOW}Failed: $f${NC}"
+                echo "$UP" | jq -r '.error // empty' 2>/dev/null
+                continue
+            fi
+            echo -e "  ${GREEN}$FNAME -> uploaded${NC}"
+            update_ticket_array "$DOC_PATH" "attachments" "$URL"
+            [ "$IS_IMG" = "true" ] && update_ticket_array "$DOC_PATH" "screenshots" "$URL"
+            ATTACH_TEXT="$ATTACH_TEXT
+- $FNAME: $URL"
+        done
+        # Append a human-readable attachments section to the content body
+        append_content "$DOC_PATH" "$ATTACH_TEXT"
+    fi
+
+    echo ""
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${GREEN}Created $TICKET_ID${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo "Client:  ${COMPANY:-$CLIENT_NAME}"
+    [ -n "$PROJECT_NAME" ] && echo "Project: $PROJECT_NAME"
+    echo "Status:  $STATUS"
+    echo "View: https://bucky.sunbowl.ca (Databases > Tickets)"
 }
 
 # Check for help flag
 [ "$1" = "--help" ] || [ "$1" = "-h" ] && show_usage
 [ -z "$1" ] && show_usage
+
+# Dispatch: create mode
+if [ "$1" = "--create" ] || [ "$1" = "create" ]; then
+    shift
+    run_create_mode "$@"
+    exit $?
+fi
 
 TICKET_INPUT="$1"
 shift

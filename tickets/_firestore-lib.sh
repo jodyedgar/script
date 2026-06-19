@@ -312,3 +312,98 @@ get_document() {
     curl -s "$FIRESTORE_BASE/$DOC_PATH" \
         -H "Authorization: Bearer $TOKEN"
 }
+
+# ============================================================
+# TICKET CREATION HELPERS
+# ============================================================
+
+# Normalize a Slack channel string: strip leading '#', lowercase, trim.
+normalize_channel() {
+    printf '%s' "$1" | sed 's/^#//' | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Resolve a client by Slack channel. Tries, in order:
+#   1. clients.slackChannels array-contains <channel>   (canonical)
+#   2. clients.slackChannel == <channel>                (legacy singular)
+#   3. clients.name == "#<channel>"                     (internal-key convention)
+# Returns the raw runQuery result (array). NOTE: tier 1 returns up to 10 so the
+# caller can detect a channel shared by multiple clients and disambiguate.
+query_clients_by_slack_channel() {
+    local CH="$1"
+    local TOKEN=$(get_auth_token)
+    local R
+
+    # 1. array-contains on slackChannels
+    R=$(curl -s -X POST "$FIRESTORE_BASE:runQuery" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"clients\"}],\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"slackChannels\"},\"op\":\"ARRAY_CONTAINS\",\"value\":{\"stringValue\":\"$CH\"}}},\"limit\":10}}")
+    if echo "$R" | jq -e '.[0].document' >/dev/null 2>&1; then echo "$R"; return; fi
+
+    # 2. legacy singular slackChannel
+    R=$(curl -s -X POST "$FIRESTORE_BASE:runQuery" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"clients\"}],\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"slackChannel\"},\"op\":\"EQUAL\",\"value\":{\"stringValue\":\"$CH\"}}},\"limit\":10}}")
+    if echo "$R" | jq -e '.[0].document' >/dev/null 2>&1; then echo "$R"; return; fi
+
+    # 3. internal-key convention name == "#channel"
+    R=$(curl -s -X POST "$FIRESTORE_BASE:runQuery" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"clients\"}],\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"name\"},\"op\":\"EQUAL\",\"value\":{\"stringValue\":\"#$CH\"}}},\"limit\":10}}")
+    echo "$R"
+}
+
+# Query clientProjects for a given clientId. Returns the raw runQuery result (array).
+query_projects_by_client() {
+    local CLIENT_ID="$1"
+    local LIMIT="${2:-50}"
+    local TOKEN=$(get_auth_token)
+
+    curl -s -X POST "$FIRESTORE_BASE:runQuery" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{
+            \"structuredQuery\": {
+                \"from\": [{\"collectionId\": \"clientProjects\"}],
+                \"where\": {
+                    \"fieldFilter\": {
+                        \"field\": {\"fieldPath\": \"clientId\"},
+                        \"op\": \"EQUAL\",
+                        \"value\": {\"stringValue\": \"$CLIENT_ID\"}
+                    }
+                },
+                \"limit\": $LIMIT
+            }
+        }"
+}
+
+# Create a new ticket document with auto-generated ID.
+# Accepts a fully-formed Firestore `fields` JSON object (typed values) as $1.
+# Deliberately OMITS ticketNumber/displayId so the enforceTicketNumber onCreate
+# trigger mints TICK-N from counters/tickets (never max+1/manual).
+# Echoes the create response JSON (includes the new document `name` path).
+create_ticket() {
+    local FIELDS_JSON="$1"
+    local TOKEN=$(get_auth_token)
+
+    curl -s -X POST "$FIRESTORE_BASE/tickets" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"fields\": $FIELDS_JSON}"
+}
+
+# Poll a freshly-created ticket doc until the enforceTicketNumber trigger has
+# written displayId (TICK-N). Echoes the displayId, or empty on timeout.
+# Usage: wait_for_display_id DOC_PATH [MAX_TRIES]
+wait_for_display_id() {
+    local DOC_PATH="$1"
+    local MAX="${2:-20}"
+    local TOKEN=$(get_auth_token)
+    local DISPLAY_ID=""
+    local i
+    for ((i=0; i<MAX; i++)); do
+        local DOC=$(curl -s "$FIRESTORE_BASE/$DOC_PATH" -H "Authorization: Bearer $TOKEN")
+        DISPLAY_ID=$(echo "$DOC" | jq -r '.fields.displayId.stringValue // empty' 2>/dev/null)
+        [ -n "$DISPLAY_ID" ] && break
+        sleep 1
+    done
+    echo "$DISPLAY_ID"
+}

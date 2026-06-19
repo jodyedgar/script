@@ -1,33 +1,20 @@
 #!/bin/bash
 
-# Complete multiple tickets in a batch
+# Complete multiple tickets in a batch (Firestore-backed)
 # Usage:
-#   ./complete-batch.sh --batch pdp-P1-QuickWins
-#   ./complete-batch.sh --category pdp --priority P1-QuickWins
-#   ./complete-batch.sh --from-file tickets.txt
-#   ./complete-batch.sh --from-dir /tmp/batch-tickets
-#
-# Marks all tickets in a batch as Complete with:
-#   - Status update to Complete
-#   - PR URL (auto-detected or specified)
-#   - Completion summary
-#   - Checkin timestamp
+#   ./ticket-batch-complete.sh --batch pdp-P1-QuickWins
+#   ./ticket-batch-complete.sh --category pdp --priority P1-QuickWins
+#   ./ticket-batch-complete.sh --from-file tickets.txt
+#   ./ticket-batch-complete.sh --from-dir /tmp/batch-tickets
 
 set -e
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Notion config
-TICKETS_DATABASE_ID="1abc197b3ae7808fa454dd0c0e96ca6f"
-
-# Script locations
+# Source shared library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MANAGE_SCRIPT="$SCRIPT_DIR/manage-notion-ticket.sh"
+source "$SCRIPT_DIR/_firestore-lib.sh"
+
+# Use ticket.sh for individual updates
+TICKET_SCRIPT="$SCRIPT_DIR/ticket.sh"
 
 show_usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -35,7 +22,7 @@ show_usage() {
     echo "Complete multiple tickets in a batch."
     echo ""
     echo "Options:"
-    echo "  --batch, -b BATCH_KEY     Complete all tickets in batch (e.g., pdp-P1-QuickWins)"
+    echo "  --batch, -b BATCH_KEY     Complete all tickets in batch"
     echo "  --category, -c CATEGORY   Filter by category"
     echo "  --priority, -p PRIORITY   Filter by priority"
     echo "  --from-file, -f FILE      Complete tickets listed in file"
@@ -43,14 +30,8 @@ show_usage() {
     echo "  --pr-url URL              GitHub PR URL for all tickets"
     echo "  --summary, -s TEXT        Completion summary for all tickets"
     echo "  --status STATUS           Status to set (default: Complete)"
-    echo "  --require-qa              Only complete tickets that have QA passed"
     echo "  --dry-run                 Show what would be completed"
     echo "  --help, -h                Show this help"
-    echo ""
-    echo "Examples:"
-    echo "  $0 --batch pdp-P1-QuickWins --pr-url https://github.com/org/repo/pull/123"
-    echo "  $0 --from-dir /tmp/batch-tickets --summary 'Batch completed'"
-    echo "  $0 --category cart --require-qa"
     exit 1
 }
 
@@ -63,58 +44,21 @@ FROM_DIR=""
 PR_URL=""
 SUMMARY=""
 STATUS="Complete"
-REQUIRE_QA=false
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --batch|-b)
-            BATCH_KEY="$2"
-            shift 2
-            ;;
-        --category|-c)
-            CATEGORY="$2"
-            shift 2
-            ;;
-        --priority|-p)
-            PRIORITY="$2"
-            shift 2
-            ;;
-        --from-file|-f)
-            FROM_FILE="$2"
-            shift 2
-            ;;
-        --from-dir|-d)
-            FROM_DIR="$2"
-            shift 2
-            ;;
-        --pr-url)
-            PR_URL="$2"
-            shift 2
-            ;;
-        --summary|-s)
-            SUMMARY="$2"
-            shift 2
-            ;;
-        --status)
-            STATUS="$2"
-            shift 2
-            ;;
-        --require-qa)
-            REQUIRE_QA=true
-            shift
-            ;;
-        --dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        --help|-h)
-            show_usage
-            ;;
-        *)
-            echo -e "${RED}Unknown option: $1${NC}"
-            show_usage
-            ;;
+        --batch|-b) BATCH_KEY="$2"; shift 2 ;;
+        --category|-c) CATEGORY="$2"; shift 2 ;;
+        --priority|-p) PRIORITY="$2"; shift 2 ;;
+        --from-file|-f) FROM_FILE="$2"; shift 2 ;;
+        --from-dir|-d) FROM_DIR="$2"; shift 2 ;;
+        --pr-url) PR_URL="$2"; shift 2 ;;
+        --summary|-s) SUMMARY="$2"; shift 2 ;;
+        --status) STATUS="$2"; shift 2 ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --help|-h) show_usage ;;
+        *) echo -e "${RED}Unknown option: $1${NC}"; show_usage ;;
     esac
 done
 
@@ -122,16 +66,6 @@ done
 if [ -z "$BATCH_KEY" ] && [ -z "$CATEGORY" ] && [ -z "$FROM_FILE" ] && [ -z "$FROM_DIR" ]; then
     echo -e "${RED}Error: Specify --batch, --category, --from-file, or --from-dir${NC}"
     show_usage
-fi
-
-# Load credentials
-if [ -f "$HOME/.bash_profile" ]; then
-    source "$HOME/.bash_profile"
-fi
-
-if [ -z "$NOTION_API_KEY" ]; then
-    echo -e "${RED}Error: NOTION_API_KEY not set${NC}"
-    exit 1
 fi
 
 # Auto-detect PR URL from git
@@ -162,14 +96,14 @@ elif [ -n "$FROM_DIR" ]; then
     TICKET_IDS=$(ls "$FROM_DIR" | grep -E "^TICK-[0-9]+")
 elif [ -n "$BATCH_KEY" ]; then
     if [ ! -f "$CATEGORIZED_FILE" ]; then
-        echo -e "${RED}Error: Categorized file not found. Run categorization first.${NC}"
+        echo -e "${RED}Error: Categorized file not found.${NC}"
         exit 1
     fi
     TICKET_IDS=$(cat "$CATEGORIZED_FILE" | jq -r --arg key "$BATCH_KEY" '
         [.[] | select(.batch_key == $key)] | .[].id')
 elif [ -n "$CATEGORY" ]; then
     if [ ! -f "$CATEGORIZED_FILE" ]; then
-        echo -e "${RED}Error: Categorized file not found. Run categorization first.${NC}"
+        echo -e "${RED}Error: Categorized file not found.${NC}"
         exit 1
     fi
 
@@ -195,32 +129,15 @@ echo "========================================"
 echo ""
 echo "Tickets to complete: $TICKET_COUNT"
 echo "Status: $STATUS"
-if [ -n "$PR_URL" ]; then
-    echo "PR URL: $PR_URL"
-fi
-if [ -n "$SUMMARY" ]; then
-    echo "Summary: $SUMMARY"
-fi
+[ -n "$PR_URL" ] && echo "PR URL: $PR_URL"
+[ -n "$SUMMARY" ] && echo "Summary: $SUMMARY"
 echo ""
-
-# Check QA requirement
-if [ "$REQUIRE_QA" = true ]; then
-    echo -e "${YELLOW}QA verification required - checking QA status...${NC}"
-    echo ""
-    # This would check QA logs or Notion fields
-    # For now, we'll just warn
-    echo -e "${YELLOW}Note: QA verification check not yet implemented${NC}"
-    echo "Proceeding without QA check..."
-    echo ""
-fi
 
 # Dry run
 if [ "$DRY_RUN" = true ]; then
     echo "DRY RUN - Would complete:"
     echo "$TICKET_IDS" | while read -r ticket; do
-        if [ -n "$ticket" ]; then
-            echo "  - $ticket"
-        fi
+        [ -n "$ticket" ] && echo "  - $ticket"
     done
     exit 0
 fi
@@ -237,7 +154,7 @@ fi
 
 echo ""
 
-# Complete each ticket
+# Complete each ticket using ticket.sh
 SUCCESS=0
 FAILED=0
 
@@ -248,23 +165,16 @@ echo "$TICKET_IDS" | while read -r ticket; do
 
     echo -e "${BLUE}Completing $ticket...${NC}"
 
-    # Build manage command
-    CMD="$MANAGE_SCRIPT $ticket --status '$STATUS'"
-
-    if [ -n "$PR_URL" ]; then
-        CMD="$CMD --pr-url '$PR_URL'"
-    fi
-
-    if [ -n "$SUMMARY" ]; then
-        CMD="$CMD --summary '$SUMMARY'"
-    fi
+    # Build args for ticket.sh
+    ARGS=("$ticket" "--status" "$STATUS")
+    [ -n "$SUMMARY" ] && ARGS+=("--summary" "$SUMMARY")
 
     # Execute
-    if eval "$CMD" > /tmp/complete-output.txt 2>&1; then
-        echo -e "  ${GREEN}✓ Completed${NC}"
+    if "$TICKET_SCRIPT" "${ARGS[@]}" > /tmp/complete-output.txt 2>&1; then
+        echo -e "  ${GREEN}Completed${NC}"
         SUCCESS=$((SUCCESS + 1))
     else
-        echo -e "  ${RED}✗ Failed${NC}"
+        echo -e "  ${RED}Failed${NC}"
         cat /tmp/complete-output.txt | sed 's/^/    /'
         FAILED=$((FAILED + 1))
     fi
@@ -275,15 +185,11 @@ echo "========================================"
 echo "Batch Completion Summary"
 echo "========================================"
 echo ""
-echo -e "${GREEN}Completed: $SUCCESS${NC}"
-if [ "$FAILED" -gt 0 ]; then
-    echo -e "${RED}Failed: $FAILED${NC}"
-fi
-echo ""
+echo -e "${GREEN}Done${NC}"
 
 # Log completion
 LOG_DIR="$HOME/Dropbox/wwwroot/store.figma.com/shopify-the-figma-store/horizon/tests/results/completion-logs"
-mkdir -p "$LOG_DIR"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
 
 LOG_FILE="$LOG_DIR/batch-$(date +%Y%m%d-%H%M%S).json"
 
@@ -303,6 +209,6 @@ jq -n \
         status: $status,
         pr_url: $pr_url,
         ticket_count: $count
-    }' > "$LOG_FILE"
+    }' > "$LOG_FILE" 2>/dev/null || true
 
 echo "Completion log: $LOG_FILE"

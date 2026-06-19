@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "initialized": "2026-06-19 15:23:18",
+  "project_root": "/Users/jodyedgar/Dropbox/scripts/tickets",
+  "deprecated_retention_days": 30,
+  "inventory_settings": {
+    "ignore_dirs": ["node_modules", ".git", "dist", "build", "deprecated", ".necro", "__pycache__", "venv", ".venv", "vendor", "target"],
+    "suspicious_patterns": ["*-old.*", "*-backup.*", "*.bak", "*-copy.*", "*.old", "*_old.*", "*_backup.*", "*-deprecated.*", "*.orig", "*~"]
+  }
+}
