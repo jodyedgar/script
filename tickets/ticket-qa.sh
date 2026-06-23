@@ -17,6 +17,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_firestore-lib.sh"
 
+# Shared secret for the (now auth-gated) captureQAScreenshot function.
+# Read from env or the local token file (set up alongside the Secret Manager secret).
+QA_SCREENSHOT_TOKEN="${QA_SCREENSHOT_TOKEN:-$(cat "$HOME/.config/bucky/qa_screenshot_token" 2>/dev/null)}"
+
 # QA scripts directory
 QA_DIR="$SCRIPT_DIR/qa"
 BATCH_RESULTS_DIR="$SCRIPT_DIR/batch/results"
@@ -397,7 +401,8 @@ record_qa_for_ticket() {
                         \"url\": \"$CAPTURE_URL\",
                         \"viewport\": {\"width\": $VIEWPORT_WIDTH, \"height\": $VIEWPORT_HEIGHT},
                         \"pixelRatio\": $PIXEL_RATIO,
-                        \"ticketId\": \"$TICKET\"
+                        \"ticketId\": \"$TICKET\",
+                        \"authToken\": \"$QA_SCREENSHOT_TOKEN\"
                     }
                 }")
 
