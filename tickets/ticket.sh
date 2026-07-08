@@ -27,12 +27,29 @@
 #   --qa-after                   Capture FULL PAGE Chrome screenshot (auto viewport) -> QA After
 #   --qa-after-file FILE         Upload specific file as QA After (must be FULL PAGE screenshot)
 #
+# Job Report Options (senior-dev cycle pickup — AI video job reports):
+#   --job-report                 Submit this ticket to the job-report pipeline. Writes the
+#                                same Firestore contract as Bucky QA (agentQa + qa_pass),
+#                                which triggers: Gemini transcript -> Jody-voice audio ->
+#                                GIF+audio MP4 with captions. Review & approve in the
+#                                Job Reports admin screen (approve moves it to In Review).
+#   --gif FILE_OR_URL            REQUIRED with --job-report. Screen-capture GIF showing the
+#                                change working. Local files upload to Storage automatically.
+#                                Loops for the whole ~45s video: aim for a 10-20s clean loop.
+#   --qa-notes TEXT              What you verified, in PLAIN CLIENT language — this text
+#                                feeds the client-facing voiceover. Falls back to --summary.
+#   --job-report-status          Show the ticket's job report (transcript, video, status).
+#
 # Examples:
 #   # Start working on a ticket (fetch details, set In Progress)
 #   ./ticket.sh TICK-1234
 #
 #   # Complete ticket with QA screenshots
 #   ./ticket.sh TICK-1234 --status "In Review" --qa-before --qa-after --summary "Fixed the issue"
+#
+#   # Senior-dev cycle pickup: submit for an AI video job report
+#   ./ticket.sh TICK-1234 --job-report --gif ~/Desktop/fix-demo.gif \
+#       --qa-notes "The announcement bar stays pinned while scrolling on desktop and mobile"
 
 set -e
 
@@ -70,6 +87,156 @@ get_theme_id_from_branch() {
     echo "$THEME_JSON" | jq -r '.[0].id // empty' 2>/dev/null || true
 }
 
+# ============================================================
+# JOB REPORT INTEGRATION (senior-dev cycle pickup)
+# Writes the same Firestore contract as the Bucky QA agent — see
+# runner/QA-AGENT-CONTRACT.md in the Bucky repo. The onTicketQaPassed
+# trigger then generates transcript -> audio -> MP4 server-side.
+# ============================================================
+
+STORAGE_BUCKET="bucky-app-355a3.firebasestorage.app"
+
+# Print a job report doc's status/transcript/video. $1 = ticket doc id.
+check_job_report() {
+    local TICKET_DOC_ID="$1"
+    local REPORT=$(get_document "ticketJobReports/$TICKET_DOC_ID")
+    local JR_STATUS=$(echo "$REPORT" | jq -r '.fields.status.stringValue // empty')
+
+    if [ -z "$JR_STATUS" ]; then
+        echo -e "${YELLOW}No job report exists for this ticket yet.${NC}"
+        echo "Submit one with: $0 $TICKET_ID --job-report --gif <file-or-url> --qa-notes '...'"
+        return 1
+    fi
+
+    echo -e "${BLUE}JOB REPORT:${NC}"
+    echo "----------------------------------------"
+    echo -e "Status: ${GREEN}$JR_STATUS${NC}"
+    local TRANSCRIPT=$(echo "$REPORT" | jq -r '.fields.transcript.stringValue // empty')
+    local VIDEO_URL=$(echo "$REPORT" | jq -r '.fields.video.mapValue.fields.publicUrl.stringValue // empty')
+    local VIDEO_ERR=$(echo "$REPORT" | jq -r '.fields.video.mapValue.fields.error.stringValue // empty')
+    local AUDIO_ERR=$(echo "$REPORT" | jq -r '.fields.audio.mapValue.fields.error.stringValue // empty')
+    local TOP_ERR=$(echo "$REPORT" | jq -r '.fields.error.stringValue // empty')
+    local APPROVED_BY=$(echo "$REPORT" | jq -r '.fields.approvedBy.stringValue // empty')
+    [ -n "$TRANSCRIPT" ] && echo "" && echo "Transcript:" && echo "$TRANSCRIPT"
+    [ -n "$VIDEO_URL" ] && echo "" && echo -e "Video: ${GREEN}$VIDEO_URL${NC}"
+    [ -n "$VIDEO_ERR" ] && echo -e "${RED}Video error: $VIDEO_ERR${NC}"
+    [ -n "$AUDIO_ERR" ] && echo -e "${RED}Audio error: $AUDIO_ERR${NC}"
+    [ -n "$TOP_ERR" ] && echo -e "${RED}Pipeline error: $TOP_ERR${NC}"
+    [ -n "$APPROVED_BY" ] && echo -e "Approved by: $APPROVED_BY"
+    if [ "$JR_STATUS" = "draft" ]; then
+        echo ""
+        echo -e "Review & approve in the ${CYAN}Job Reports${NC} screen: https://bucky.sunbowl.ca (Admin > Job Reports)"
+    fi
+    return 0
+}
+
+# Submit the job-report contract for a ticket.
+# Uses: DOC_PATH, TICKET_ID, JR_GIF, JR_NOTES (globals set by the caller).
+submit_job_report() {
+    local TICKET_DOC_ID=$(echo "$DOC_PATH" | sed 's|.*/||')
+    local TOKEN=$(get_auth_token)
+
+    # ---- Notes (feed the client-facing voiceover) ----
+    local NOTES="${JR_NOTES:-$SUMMARY_TEXT}"
+    if [ -z "$NOTES" ]; then
+        echo -e "${RED}Error: --job-report needs --qa-notes (or --summary).${NC}"
+        echo "Describe WHAT you verified in plain client language — it feeds the voiceover."
+        return 1
+    fi
+
+    # ---- GIF: upload local file, or accept an https URL ----
+    local GIF_URL=""
+    local GIF_GS_PATH=""
+    if [ -z "$JR_GIF" ]; then
+        echo -e "${RED}Error: --job-report needs --gif <file-or-url>.${NC}"
+        return 1
+    fi
+    if [[ "$JR_GIF" =~ ^https?:// ]]; then
+        GIF_URL="$JR_GIF"
+    elif [ -f "$JR_GIF" ]; then
+        if ! command -v gsutil >/dev/null 2>&1; then
+            echo -e "${RED}Error: gsutil not found (needed to upload the GIF).${NC}"
+            return 1
+        fi
+        local OBJ="qa_screenshots/$TICKET_ID/jobreport-$(date +%s).gif"
+        echo "Uploading GIF to Storage..."
+        if ! gsutil -q cp "$JR_GIF" "gs://$STORAGE_BUCKET/$OBJ"; then
+            echo -e "${RED}GIF upload failed${NC}"
+            return 1
+        fi
+        gsutil -q acl ch -u AllUsers:R "gs://$STORAGE_BUCKET/$OBJ"
+        GIF_URL="https://storage.googleapis.com/$STORAGE_BUCKET/$OBJ"
+        GIF_GS_PATH="gs://$STORAGE_BUCKET/$OBJ"
+        echo -e "${GREEN}GIF uploaded: $GIF_URL${NC}"
+    else
+        echo -e "${RED}Error: --gif '$JR_GIF' is neither a file nor an https URL${NC}"
+        return 1
+    fi
+
+    # ---- Attempt: increment past any previous QA round ----
+    local TICKET_DOC=$(get_document "$DOC_PATH")
+    local PREV_ATTEMPT=$(echo "$TICKET_DOC" | jq -r '.fields.agentQa.mapValue.fields.attempt.integerValue // "0"')
+    local ATTEMPT=$((PREV_ATTEMPT + 1))
+    local CURRENT_STATE=$(echo "$TICKET_DOC" | jq -r '.fields.aiPipelineState.stringValue // empty')
+
+    # The trigger fires only on the TRANSITION into qa_pass; if the ticket is
+    # already qa_pass (re-submission), step it away first.
+    if [ "$CURRENT_STATE" = "qa_pass" ]; then
+        update_ticket "$DOC_PATH" "aiPipelineState" "pr_open" "string" > /dev/null
+    fi
+
+    # ---- The contract write: agentQa + aiPipelineState in ONE update ----
+    local NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000000Z")
+    local GIF_PATH_JSON='{"nullValue":null}'
+    [ -n "$GIF_GS_PATH" ] && GIF_PATH_JSON="{\"stringValue\":\"$GIF_GS_PATH\"}"
+    local NOTES_ESCAPED=$(printf '%s' "$NOTES" | jq -Rs '.')
+
+    local WRITE_RESULT=$(curl -s -X PATCH "$FIRESTORE_BASE/$DOC_PATH?updateMask.fieldPaths=agentQa&updateMask.fieldPaths=aiPipelineState&updateMask.fieldPaths=updatedAt" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"fields\":{
+            \"agentQa\":{\"mapValue\":{\"fields\":{
+                \"verdict\":{\"stringValue\":\"pass\"},
+                \"gifUrl\":{\"stringValue\":\"$GIF_URL\"},
+                \"gifStoragePath\":$GIF_PATH_JSON,
+                \"notes\":{\"stringValue\":$NOTES_ESCAPED},
+                \"runId\":{\"nullValue\":null},
+                \"attempt\":{\"integerValue\":\"$ATTEMPT\"},
+                \"completedAt\":{\"timestampValue\":\"$NOW\"}
+            }}},
+            \"aiPipelineState\":{\"stringValue\":\"qa_pass\"},
+            \"updatedAt\":{\"timestampValue\":\"$NOW\"}
+        }}")
+
+    if ! echo "$WRITE_RESULT" | jq -e '.fields' > /dev/null 2>&1; then
+        echo -e "${RED}Contract write failed:${NC}"
+        echo "$WRITE_RESULT" | jq '.' 2>/dev/null || echo "$WRITE_RESULT"
+        return 1
+    fi
+    echo -e "${GREEN}Job report submitted (attempt $ATTEMPT) — pipeline is generating...${NC}"
+    echo "  (Gemini transcript -> Jody-voice audio -> GIF+audio MP4 with captions)"
+
+    # ---- Poll for the generated report (~30-60s incl. cold start) ----
+    local i
+    for ((i=0; i<40; i++)); do
+        sleep 3
+        local REPORT=$(get_document "ticketJobReports/$TICKET_DOC_ID")
+        local JR_STATUS=$(echo "$REPORT" | jq -r '.fields.status.stringValue // empty')
+        local JR_ATTEMPT=$(echo "$REPORT" | jq -r '.fields.qaAttempt.integerValue // empty')
+        if [ "$JR_ATTEMPT" = "$ATTEMPT" ] && { [ "$JR_STATUS" = "draft" ] || [ "$JR_STATUS" = "error" ]; }; then
+            echo ""
+            check_job_report "$TICKET_DOC_ID"
+            return 0
+        fi
+        printf "."
+    done
+
+    echo ""
+    echo -e "${YELLOW}Still generating after 2 minutes — check later with:${NC}"
+    echo "  $0 $TICKET_ID --job-report-status"
+    return 0
+}
+
 show_usage() {
     echo "Usage: $0 TICKET-ID [OPTIONS]"
     echo ""
@@ -93,9 +260,17 @@ show_usage() {
     echo "  --qa-after                   Capture FULL PAGE Chrome screenshot"
     echo "  --qa-after-file FILE         Upload file as QA After"
     echo ""
+    echo "Job Report Options (AI video job report for the client):"
+    echo "  --job-report                 Submit to the job-report pipeline (needs --gif)"
+    echo "  --gif FILE_OR_URL            Screen-capture GIF of the change (10-20s clean loop)"
+    echo "  --qa-notes TEXT              What you verified, in plain client language"
+    echo "                               (feeds the voiceover; falls back to --summary)"
+    echo "  --job-report-status          Show this ticket's job report status/video"
+    echo ""
     echo "Examples:"
     echo "  $0 TICK-1234"
     echo "  $0 TICK-1234 --status 'In Review' --qa-before --qa-after --summary 'Fixed the bug'"
+    echo "  $0 TICK-1234 --job-report --gif ~/Desktop/demo.gif --qa-notes 'Bar stays pinned while scrolling'"
     echo ""
     echo "Create a new ticket:"
     echo "  $0 --create --channel <slack-channel> --name 'Title' [options]"
@@ -412,6 +587,10 @@ SUMMARY_TEXT=""
 QA_BEFORE=false
 QA_AFTER=false
 QA_AFTER_FILE=""
+JOB_REPORT=false
+JR_GIF=""
+JR_NOTES=""
+JR_STATUS_ONLY=false
 FETCH_ONLY=true
 
 # Parse arguments
@@ -426,6 +605,10 @@ while [[ $# -gt 0 ]]; do
         --qa-before) QA_BEFORE=true; FETCH_ONLY=false; shift ;;
         --qa-after) QA_AFTER=true; FETCH_ONLY=false; shift ;;
         --qa-after-file) QA_AFTER_FILE="$2"; FETCH_ONLY=false; shift 2 ;;
+        --job-report) JOB_REPORT=true; FETCH_ONLY=false; shift ;;
+        --gif) JR_GIF="$2"; shift 2 ;;
+        --qa-notes) JR_NOTES="$2"; shift 2 ;;
+        --job-report-status) JR_STATUS_ONLY=true; FETCH_ONLY=false; shift ;;
         --help|-h) show_usage ;;
         *) echo -e "${RED}Error: Unknown option: $1${NC}"; show_usage ;;
     esac
@@ -585,6 +768,13 @@ fi
 # UPDATE MODE
 # ============================================================
 
+# Status check short-circuits — read-only, no ticket mutation.
+if [ "$JR_STATUS_ONLY" = true ]; then
+    echo ""
+    check_job_report "$(echo "$DOC_PATH" | sed 's|.*/||')"
+    exit $?
+fi
+
 echo ""
 echo -e "${BLUE}Updating ticket...${NC}"
 
@@ -681,6 +871,14 @@ if [ -n "$QA_AFTER_FILE" ]; then
             echo -e "${YELLOW}QA After upload failed${NC}"
         fi
     fi
+fi
+
+# Handle job-report submission (after QA so a combined
+# "--qa-before --qa-after --job-report" call captures screenshots first)
+if [ "$JOB_REPORT" = true ]; then
+    echo ""
+    echo -e "${BLUE}Submitting job report...${NC}"
+    submit_job_report
 fi
 
 # Final summary
