@@ -19,6 +19,7 @@
 #   --status, -s STATUS          Set ticket status (e.g., 'Complete', 'In Progress')
 #   --pr-url, -p URL            Set GitHub PR URL
 #   --theme-id, -t ID           Set Shopify Theme Preview ID (manual)
+#   --page-url, -u URL           Set the page being worked on (defaults to store URL)
 #   --auto-theme                 Auto-detect Theme ID from git branch name
 #   --summary, --notes, -n TEXT  Set ticket summary field
 #
@@ -251,6 +252,7 @@ show_usage() {
     echo "  --status, -s STATUS          Set ticket status"
     echo "  --pr-url, -p URL            Set GitHub PR URL"
     echo "  --theme-id, -t ID           Set Shopify Theme Preview ID"
+    echo "  --page-url, -u URL           Set the page being worked on"
     echo "  --auto-theme                 Auto-detect Theme ID from git branch"
     echo "  --store STORE               Shopify store for theme lookup"
     echo "  --summary, --notes, -n TEXT  Set ticket summary"
@@ -581,6 +583,7 @@ TICKET_NUMBER=$(echo "$TICKET_ID" | sed 's/TICK-//')
 NEW_STATUS=""
 PR_URL=""
 THEME_ID=""
+NEW_PAGE_URL=""
 AUTO_THEME=false
 SHOPIFY_STORE=""
 SUMMARY_TEXT=""
@@ -599,6 +602,7 @@ while [[ $# -gt 0 ]]; do
         --status|-s) NEW_STATUS="$2"; FETCH_ONLY=false; shift 2 ;;
         --pr-url|-p) PR_URL="$2"; FETCH_ONLY=false; shift 2 ;;
         --theme-id|-t) THEME_ID="$2"; FETCH_ONLY=false; shift 2 ;;
+        --page-url|-u) NEW_PAGE_URL="$2"; FETCH_ONLY=false; shift 2 ;;
         --auto-theme) AUTO_THEME=true; FETCH_ONLY=false; shift ;;
         --store) SHOPIFY_STORE="$2"; shift 2 ;;
         --summary|--notes|-n) SUMMARY_TEXT="$2"; FETCH_ONLY=false; shift 2 ;;
@@ -804,6 +808,11 @@ if [ -n "$THEME_ID" ]; then
     HAS_UPDATES=true
 fi
 
+if [ -n "$NEW_PAGE_URL" ]; then
+    UPDATE_ARGS+=("pageUrl" "$NEW_PAGE_URL" "string")
+    HAS_UPDATES=true
+fi
+
 # Update properties if any
 if [ "$HAS_UPDATES" = true ]; then
     RESULT=$(update_ticket "$DOC_PATH" "${UPDATE_ARGS[@]}")
@@ -811,6 +820,7 @@ if [ "$HAS_UPDATES" = true ]; then
     if echo "$RESULT" | jq -e '.fields' > /dev/null 2>&1; then
         [ -n "$NEW_STATUS" ] && echo -e "${GREEN}Status updated to '$NEW_STATUS'${NC}"
         [ -n "$THEME_ID" ] && echo -e "${GREEN}Theme ID updated to $THEME_ID${NC}"
+        [ -n "$NEW_PAGE_URL" ] && echo -e "${GREEN}Page URL updated to $NEW_PAGE_URL${NC}"
     else
         echo -e "${RED}Error updating properties${NC}"
         echo "$RESULT" | jq '.' 2>/dev/null || echo "$RESULT"
