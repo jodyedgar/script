@@ -12,6 +12,7 @@
 #   sales.sh verify-mx <file|domain>  deliverability check
 #   sales.sh segment <field> <value>  export a contact list
 #   sales.sh check-merge <sequenceId> broken first names — run before any send
+#   sales.sh check-exclusions <sequenceId>  DNC + personal-outreach + undeliverable
 #
 # WRITE — facts only; judgment queues for approval
 #   sales.sh mark-email <email> --status no_mx|valid|bounced|role_address
@@ -452,6 +453,67 @@ cmd_backfill_mx() {
 
 # ------------------------------------------------------------
 # ------------------------------------------------------------
+# check-exclusions — run before any send, alongside check-merge.
+#
+# Both exclusion lists are absolute, and the only way to know they held is to
+# test the BUILT enrollments against them, after every merge and de-dupe. A
+# do-not-contact added an hour ago does not retroactively leave a sequence.
+# ------------------------------------------------------------
+cmd_check_exclusions() {
+  local SEQ="$1"; require "$SEQ"
+
+  local ROWS; ROWS=$(fs_where sequenceEnrollments sequenceId EQUAL "$SEQ" 500 | fs_rows)
+  local TOTAL; TOTAL=$(echo "$ROWS" | jq 'length')
+
+  # Personal-outreach list: Jody handles these directly, never a sequence.
+  local PERSONAL_FILE="${SALES_PLAYBOOK_DIR:-/Users/jodyedgar/Dropbox/Sales/playbook}/personal-outreach.md"
+  local PERSONAL=""
+  [ -f "$PERSONAL_FILE" ] && PERSONAL=$(grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$PERSONAL_FILE" |
+                                        tr '[:upper:]' '[:lower:]' | sort -u)
+
+  head1 "Exclusion check — $TOTAL enrollments"
+
+  local HITS=0
+  while read -r ROW; do
+    [ -z "$ROW" ] && continue
+    local EMAIL STATUS
+    EMAIL=$(echo "$ROW" | jq -r '.contactEmail // empty' | tr '[:upper:]' '[:lower:]')
+    STATUS=$(echo "$ROW" | jq -r '.status // "?"')
+    [ -z "$EMAIL" ] && continue
+
+    # Already exited — not a live risk, so not reported as one.
+    case "$STATUS" in unsubscribed|manual_exit|replied|bounced) continue ;; esac
+
+    if [ -n "$PERSONAL" ] && grep -qxF "$EMAIL" <<<"$PERSONAL"; then
+      printf "  ${RED}%-44s personal-outreach — Jody handles directly${NC}\n" "$EMAIL"
+      HITS=$((HITS+1)); continue
+    fi
+
+    local C; C=$(find_contact "$EMAIL")
+    if [ "$(echo "$C" | jq -r '.[0].doNotContact // false')" = "true" ]; then
+      printf "  ${RED}%-44s DO NOT CONTACT — %s${NC}\n" \
+        "$EMAIL" "$(echo "$C" | jq -r '.[0].doNotContactReason // "no reason recorded"')"
+      HITS=$((HITS+1)); continue
+    fi
+
+    local ES; ES=$(echo "$C" | jq -r '.[0].emailStatus // empty')
+    case "$ES" in
+      no_mx|bounced)
+        printf "  ${YELLOW}%-44s undeliverable (%s)${NC}\n" "$EMAIL" "$ES"
+        HITS=$((HITS+1)) ;;
+    esac
+  done <<< "$(echo "$ROWS" | jq -c '.[]')"
+
+  hr
+  if [ "$HITS" = "0" ]; then
+    printf "  ${GREEN}clean${NC} — no excluded contact is live in this sequence\n"
+  else
+    printf "  ${RED}%s live enrollment(s) must be removed before sending.${NC}\n" "$HITS"
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------
 # merchant-probe — populate isMerchant, the Rung 1 gate.
 #
 # Without this every prospect places at Rung 0 and the agent can do nothing
@@ -709,6 +771,7 @@ case "$CMD" in
   campaign)    cmd_campaign "${1:-}" ;;
   verify-mx)   cmd_verify_mx "${1:-}" ;;
   check-merge) cmd_check_merge "${1:-}" ;;
+  check-exclusions) cmd_check_exclusions "${1:-}" ;;
   segment)     cmd_segment "${1:-}" "${2:-}" ;;
 
   mark-email)  cmd_mark_email "${1:-}" "$(getflag status "$@")" ;;
