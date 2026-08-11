@@ -21,6 +21,11 @@
 #   sales.sh propose <email> --field F --value V --why "..."
 #   sales.sh backfill-mx --sequence <id> --write   use live enrollments as source
 #
+# PLAYBOOK — markdown is authored locally, Firestore is what agents read
+#   sales.sh playbook status|diff             show drift vs what is live
+#   sales.sh playbook push                    publish changed sections
+#   sales.sh playbook show <section>          print the live body
+#
 # REVIEW
 #   sales.sh proposals [--status pending|approved|dropped]
 #   sales.sh approve <id> [--as "value"] [--also-field F --also-value V]
@@ -41,7 +46,7 @@ CMD="${1:-help}"; shift 2>/dev/null || true
 
 # ------------------------------------------------------------
 usage() {
-  sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 require() {
@@ -446,6 +451,109 @@ cmd_backfill_mx() {
 
 # ------------------------------------------------------------
 # ------------------------------------------------------------
+# playbook — promote authored markdown into Firestore.
+#
+# Local files are the authoring surface; salesPlaybook/{section} is what
+# server-side agents read. Promotion is the supervision gate: nothing
+# governs an autonomous agent until it is deliberately published.
+# ------------------------------------------------------------
+
+PLAYBOOK_DIR="${SALES_PLAYBOOK_DIR:-/Users/jodyedgar/Dropbox/Sales/playbook}"
+
+# strategy and ladder first — nothing else means anything without them
+PLAYBOOK_ORDER="strategy ladder icp qualification messaging referral objections channels do-not-contact personal-outreach"
+
+_pb_sha()  { shasum -a 256 "$1" | cut -d' ' -f1; }
+_pb_live() { get_document "salesPlaybook/$1" | fs_row; }
+
+_pb_sections() {
+  local found=""
+  for s in $PLAYBOOK_ORDER; do
+    [ -f "$PLAYBOOK_DIR/$s.md" ] && found="$found $s"
+  done
+  # anything not in the canonical order, appended so nothing is silently skipped
+  for f in "$PLAYBOOK_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    local b; b=$(basename "$f" .md)
+    case " $found " in *" $b "*) ;; *) found="$found $b" ;; esac
+  done
+  echo "$found"
+}
+
+cmd_playbook() {
+  local SUB="${1:-status}"
+  [ -d "$PLAYBOOK_DIR" ] || { echo -e "${RED}No playbook dir: $PLAYBOOK_DIR${NC}" >&2; return 1; }
+
+  case "$SUB" in
+    status|diff)
+      local DRIFT=0
+      head1 "Playbook — $PLAYBOOK_DIR"
+      printf "  %-18s %-8s %-10s %s\n" "SECTION" "VERSION" "STATE" "PUBLISHED"
+      hr
+      for s in $(_pb_sections); do
+        local LSHA LIVE LIVESHA VER PUB STATE
+        LSHA=$(_pb_sha "$PLAYBOOK_DIR/$s.md")
+        LIVE=$(_pb_live "$s")
+        LIVESHA=$(echo "$LIVE" | jq -r '.sha // empty')
+        VER=$(echo "$LIVE" | jq -r '.version // 0')
+        PUB=$(echo "$LIVE" | jq -r '.publishedAt // "—"')
+        if   [ -z "$LIVESHA" ];            then STATE="${YELLOW}unpublished${NC}"; DRIFT=$((DRIFT+1))
+        elif [ "$LIVESHA" != "$LSHA" ];    then STATE="${RED}DRIFTED${NC}";       DRIFT=$((DRIFT+1))
+        else                                    STATE="${GREEN}in sync${NC}"; fi
+        printf "  %-18s v%-7s $STATE%b %s\n" "$s" "$VER" "" "${PUB:0:19}"
+      done
+      hr
+      if [ "$DRIFT" -gt 0 ]; then
+        printf "  ${YELLOW}%s section(s) not live.${NC} Publish with: sales.sh playbook push\n" "$DRIFT"
+      else
+        printf "  ${GREEN}All sections in sync.${NC}\n"
+      fi
+      ;;
+
+    push)
+      local PUSHED=0 SKIPPED=0
+      head1 "Publishing playbook → salesPlaybook"
+      for s in $(_pb_sections); do
+        local F="$PLAYBOOK_DIR/$s.md"
+        local LSHA; LSHA=$(_pb_sha "$F")
+        local LIVE; LIVE=$(_pb_live "$s")
+        local LIVESHA; LIVESHA=$(echo "$LIVE" | jq -r '.sha // empty')
+
+        if [ "$LIVESHA" = "$LSHA" ]; then
+          printf "  %-18s unchanged\n" "$s"; SKIPPED=$((SKIPPED+1)); continue
+        fi
+
+        local VER; VER=$(echo "$LIVE" | jq -r '.version // 0')
+        VER=$((VER+1))
+        local BODY; BODY=$(cat "$F")
+
+        update_ticket "salesPlaybook/$s" \
+          section "$s" string \
+          body "$BODY" string \
+          sha "$LSHA" string \
+          version "$VER" number \
+          sourcePath "playbook/$s.md" string \
+          publishedAt "$(now_iso)" timestamp \
+          publishedBy "sales.sh" string >/dev/null
+
+        printf "  ${GREEN}✓${NC} %-16s v%s  (%s bytes)\n" "$s" "$VER" "$(wc -c < "$F" | tr -d ' ')"
+        PUSHED=$((PUSHED+1))
+      done
+      hr
+      printf "  %s published, %s unchanged.\n" "$PUSHED" "$SKIPPED"
+      [ "$PUSHED" -gt 0 ] && echo "  Server-side agents now read the new rules."
+      ;;
+
+    show)
+      local S="${2:-}"; require "$S"
+      _pb_live "$S" | jq -r '.body // "not published"'
+      ;;
+
+    *) echo -e "${RED}Unknown: playbook $SUB${NC}  (status|diff|push|show <section>)" >&2; return 1 ;;
+  esac
+}
+
+# ------------------------------------------------------------
 # Proposal review — the human gate
 # ------------------------------------------------------------
 
@@ -524,6 +632,7 @@ case "$CMD" in
   backfill-mx)
       W=""; [ -n "$(hasflag write "$@")" ] && W="--write"
       cmd_backfill_mx "${1:-}" "$W" "$(getflag sequence "$@")" ;;
+  playbook)    cmd_playbook "${1:-status}" "${2:-}" ;;
   proposals)   cmd_proposals "$(getflag status "$@")" ;;
   approve)     cmd_approve "${1:-}" "$(getflag as "$@")" "$(getflag also-field "$@")" "$(getflag also-value "$@")" ;;
   drop)        cmd_drop "${1:-}" "$(getflag why "$@")" ;;
