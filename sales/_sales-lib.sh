@@ -125,6 +125,67 @@ find_client() {
   echo "$RES" | fs_rows
 }
 
+# ============================================================
+# Writes
+# ============================================================
+
+# Fields no sales command may write. Touching email/additionalEmails without
+# recomputing allEmails silently breaks array-contains lookups, and no trigger
+# rebuilds it. Identity edits are judgment calls — they belong in salesProposals.
+FS_PROTECTED_FIELDS="email additionalEmails allEmails firstName lastName clientIds"
+
+# fs_update DOC_PATH KEY VALUE TYPE [KEY VALUE TYPE ...]
+# Wraps the ticket lib's generic PATCH (updateMask, so unlisted fields survive)
+# and refuses protected fields.
+fs_update() {
+  local DOC_PATH="$1"; shift
+  local i=1
+  for arg in "$@"; do
+    if [ $(( (i - 1) % 3 )) -eq 0 ]; then
+      for prot in $FS_PROTECTED_FIELDS; do
+        if [ "$arg" = "$prot" ]; then
+          echo -e "${RED}REFUSED: '$arg' is a protected field.${NC}" >&2
+          echo "  Writing it without recomputing allEmails breaks contact lookup." >&2
+          echo "  Identity changes are judgment calls — use: sales.sh propose" >&2
+          return 1
+        fi
+      done
+    fi
+    i=$((i+1))
+  done
+  update_ticket "$DOC_PATH" "$@"
+}
+
+now_iso() { date -u +"%Y-%m-%dT%H:%M:%S.000000Z"; }
+
+# Resolve an email to its contacts/{id} path. Empty if not found.
+contact_doc_path() {
+  find_contact "$1" | jq -r '.[0]._path // empty'
+}
+
+# Record a judgment call for batch approval rather than writing it directly.
+create_proposal() {
+  local CONTACT_PATH="$1" FIELD="$2" CURRENT="$3" PROPOSED="$4" REASON="$5"
+  local TOKEN; TOKEN=$(get_auth_token)
+  local NOW; NOW=$(now_iso)
+
+  curl -s -X POST "$FIRESTORE_BASE/salesProposals" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d "$(jq -n --arg cp "$CONTACT_PATH" --arg f "$FIELD" --arg cur "$CURRENT" \
+             --arg prop "$PROPOSED" --arg why "$REASON" --arg now "$NOW" \
+      '{fields:{
+          contactPath:  {stringValue:$cp},
+          contactId:    {stringValue:($cp | sub("contacts/";""))},
+          field:        {stringValue:$f},
+          currentValue: {stringValue:$cur},
+          proposedValue:{stringValue:$prop},
+          reason:       {stringValue:$why},
+          status:       {stringValue:"pending"},
+          proposedBy:   {stringValue:"sales.sh"},
+          proposedAt:   {timestampValue:$now},
+          createdAt:    {timestampValue:$now}}}')"
+}
+
 # MX check — the deliverability gate. Echoes "live" or "no_mx".
 mx_status() {
   local DOMAIN="$1" MX

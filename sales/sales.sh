@@ -4,14 +4,23 @@
 # Runs from any directory. Auth: gcloud auth login.
 # Playbook and campaign state live in /Dropbox/Sales; this only reads Firestore.
 #
+# READ
 #   sales.sh contact <email|name>     record + enrichment + history + tracking
 #   sales.sh company <name>           company, contacts, projects
 #   sales.sh history <email>          every touch, both comms collections
 #   sales.sh campaign <sequenceId>    live enrollment + tracking state
 #   sales.sh verify-mx <file|domain>  deliverability check
 #   sales.sh segment <field> <value>  export a contact list
+#   sales.sh check-merge <sequenceId> broken first names — run before any send
 #
-# Add --json to any command for raw JSON instead of formatted output.
+# WRITE — facts only; judgment queues for approval
+#   sales.sh mark-email <email> --status no_mx|valid|bounced|role_address
+#   sales.sh dnc <email> --reason "..."
+#   sales.sh merchant <email> --yes|--no [--platform shopify]
+#   sales.sh backfill-mx <file> [--write]      dry run unless --write
+#   sales.sh propose <email> --field F --value V --why "..."
+#
+# Add --json to any read command for raw JSON.
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_sales-lib.sh"
 
@@ -26,7 +35,7 @@ CMD="${1:-help}"; shift 2>/dev/null || true
 
 # ------------------------------------------------------------
 usage() {
-  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 require() {
@@ -271,13 +280,180 @@ cmd_segment() {
 }
 
 # ------------------------------------------------------------
+# check-merge — run before any send.
+#
+# A broken firstName renders straight into the greeting: Bucky holds
+# "J (fill out)" and "Justin Stitches Inc" as first names today. One bad
+# merge field is worse than a bounce — it reaches a human and reads as spam.
+# ------------------------------------------------------------
+cmd_check_merge() {
+  local SEQ="$1"; require "$SEQ"
+  local ROWS; ROWS=$(fs_where sequenceEnrollments sequenceId EQUAL "$SEQ" 500 | fs_rows)
+  local TOTAL; TOTAL=$(echo "$ROWS" | jq 'length')
+
+  local BAD; BAD=$(echo "$ROWS" | jq '[.[] | select(
+      (.contactFirstName // "") == ""
+      or (.contactFirstName | test("[()0-9]"))
+      or (.contactFirstName | test("(?i)\\b(inc|ltd|llc|corp|co\\.|gmbh|group|solutions|services)\\b"))
+      or (.contactFirstName | test("@"))
+      or ((.contactFirstName | length) > 15)
+    )]')
+
+  if [ "$JSON_OUT" = true ]; then echo "$BAD"; return 0; fi
+
+  local N; N=$(echo "$BAD" | jq 'length')
+  head1 "Merge-field check — $TOTAL enrollments"
+  if [ "$N" = "0" ]; then
+    printf "  ${GREEN}clean${NC} — no suspicious first names\n"
+  else
+    echo "$BAD" | jq -r '.[] | "  ⚠ \"\(.contactFirstName)\"  \(.contactEmail)  [\(.status)]"'
+    hr
+    printf "  ${RED}%s of %s would render a broken greeting.${NC} Fix before sending.\n" "$N" "$TOTAL"
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------
+# WRITES — facts only. Judgment goes to `propose`.
+# ------------------------------------------------------------
+
+# sales.sh mark-email <email> --status no_mx|valid|bounced|role_address
+cmd_mark_email() {
+  local EMAIL="$1" STATUS="${2:-}"; require "$EMAIL"
+  case "$STATUS" in
+    no_mx|valid|bounced|role_address|unverified) ;;
+    *) echo -e "${RED}--status must be one of: no_mx valid bounced role_address unverified${NC}" >&2; return 1 ;;
+  esac
+  local P; P=$(contact_doc_path "$EMAIL")
+  [ -z "$P" ] && { echo -e "${YELLOW}No contact for $EMAIL${NC}"; return 1; }
+
+  fs_update "$P" emailStatus "$STATUS" string emailCheckedAt "$(now_iso)" timestamp >/dev/null || return 1
+  printf "  ${GREEN}✓${NC} %s → emailStatus=%s\n" "$EMAIL" "$STATUS"
+}
+
+# sales.sh dnc <email> --reason "..."
+cmd_dnc() {
+  local EMAIL="$1" REASON="${2:-}"; require "$EMAIL"
+  [ -z "$REASON" ] && REASON="opt-out"   # getflag returns "" when absent, so ${2:-} won't default
+  local P; P=$(contact_doc_path "$EMAIL")
+  [ -z "$P" ] && { echo -e "${YELLOW}No contact for $EMAIL${NC}"; return 1; }
+
+  fs_update "$P" doNotContact true bool doNotContactReason "$REASON" string \
+                 doNotContactAt "$(now_iso)" timestamp >/dev/null || return 1
+  printf "  ${GREEN}✓${NC} %s → DO NOT CONTACT (%s)\n" "$EMAIL" "$REASON"
+  echo "    Permanent and cross-channel. Add them to playbook/do-not-contact.md too."
+}
+
+# sales.sh merchant <email> --yes|--no [--platform shopify]
+cmd_merchant() {
+  local EMAIL="$1" IS="${2:-}" PLATFORM="${3:-}"; require "$EMAIL"
+  case "$IS" in true|false) ;; *) echo -e "${RED}Use --yes or --no${NC}" >&2; return 1 ;; esac
+  local P; P=$(contact_doc_path "$EMAIL")
+  [ -z "$P" ] && { echo -e "${YELLOW}No contact for $EMAIL${NC}"; return 1; }
+
+  if [ -n "$PLATFORM" ]; then
+    fs_update "$P" isMerchant "$IS" bool merchantPlatform "$PLATFORM" string \
+                   merchantCheckedAt "$(now_iso)" timestamp >/dev/null || return 1
+  else
+    fs_update "$P" isMerchant "$IS" bool merchantCheckedAt "$(now_iso)" timestamp >/dev/null || return 1
+  fi
+  printf "  ${GREEN}✓${NC} %s → isMerchant=%s %s\n" "$EMAIL" "$IS" "${PLATFORM:+($PLATFORM)}"
+}
+
+# sales.sh propose <email> --field F --value V --why "..."
+cmd_propose() {
+  local EMAIL="$1" FIELD="${2:-}" VALUE="${3:-}" WHY="${4:-}"
+  require "$EMAIL"; require "$FIELD"; require "$VALUE"
+  [ -z "$WHY" ] && { echo -e "${RED}--why is required. A proposal without evidence is a guess.${NC}" >&2; return 1; }
+
+  local ROWS; ROWS=$(find_contact "$EMAIL")
+  local P; P=$(echo "$ROWS" | jq -r '.[0]._path // empty')
+  [ -z "$P" ] && { echo -e "${YELLOW}No contact for $EMAIL${NC}"; return 1; }
+  local CURRENT; CURRENT=$(echo "$ROWS" | jq -r --arg f "$FIELD" '.[0][$f] // "" | tostring')
+
+  # A proposal that changes nothing is noise in the approval queue — and usually
+  # means the record was already fixed and the source doc is stale.
+  if [ "$CURRENT" = "$VALUE" ]; then
+    echo -e "${YELLOW}No change needed:${NC} $EMAIL already has $FIELD = \"$CURRENT\"."
+    echo "  Nothing queued. If a doc still says otherwise, that doc is out of date."
+    return 0
+  fi
+
+  create_proposal "$P" "$FIELD" "$CURRENT" "$VALUE" "$WHY" >/dev/null || return 1
+  printf "  ${GREEN}✓${NC} proposed: %s  %s: %s → %s\n" "$EMAIL" "$FIELD" "${CURRENT:-—}" "$VALUE"
+  echo "    Queued in salesProposals for batch approval. Nothing changed on the contact."
+}
+
+# sales.sh backfill-mx <file> [--write]
+# Reads every address in a file, MX-checks each domain, optionally records the result.
+cmd_backfill_mx() {
+  local FILE="$1" WRITE="${2:-}"; require "$FILE"
+  [ -f "$FILE" ] || { echo -e "${RED}No such file: $FILE${NC}" >&2; return 1; }
+
+  local EMAILS; EMAILS=$(grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$FILE" |
+                          tr '[:upper:]' '[:lower:]' | sort -u)
+  local TOTAL=0 DEAD=0 WROTE=0 MISSING=0
+  declare -a DEAD_LIST=()
+
+  [ "$WRITE" != "--write" ] && echo -e "${YELLOW}DRY RUN — add --write to record results.${NC}"
+  echo ""
+
+  while read -r E; do
+    [ -z "$E" ] && continue
+    TOTAL=$((TOTAL+1))
+    local D ST; D=$(domain_of "$E"); ST=$(mx_status "$D")
+    if [ "$ST" = "no_mx" ]; then
+      DEAD=$((DEAD+1)); DEAD_LIST+=("$E")
+      printf "  ${RED}%-46s no MX${NC}\n" "$E"
+    fi
+    if [ "$WRITE" = "--write" ]; then
+      local P; P=$(contact_doc_path "$E")
+      if [ -z "$P" ]; then
+        MISSING=$((MISSING+1))
+      else
+        local FSTATUS="valid"; [ "$ST" = "no_mx" ] && FSTATUS="no_mx"
+        fs_update "$P" emailStatus "$FSTATUS" string emailCheckedAt "$(now_iso)" timestamp >/dev/null \
+          && WROTE=$((WROTE+1))
+      fi
+    fi
+  done <<< "$EMAILS"
+
+  hr
+  printf "  %s addresses · ${RED}%s undeliverable${NC}\n" "$TOTAL" "$DEAD"
+  [ "$WRITE" = "--write" ] && printf "  %s contacts updated · %s not found in Bucky\n" "$WROTE" "$MISSING"
+  echo ""
+  echo "  MX proves the DOMAIN accepts mail. It cannot detect a dead mailbox on a"
+  echo "  live domain — anotherblankpage.com and parkandfifthco.com both passed MX"
+  echo "  and still hard-bounced. Expect ~5% mailbox-level bounces regardless."
+}
+
+# ------------------------------------------------------------
+getflag() { local want="$1"; shift; local prev=""
+  for a in "$@"; do [ "$prev" = "--$want" ] && { echo "$a"; return; }; prev="$a"; done; }
+hasflag() { local want="$1"; shift
+  for a in "$@"; do [ "$a" = "--$want" ] && { echo "true"; return; }; done; }
+
 case "$CMD" in
-  contact)    cmd_contact "${1:-}" ;;
-  company)    cmd_company "${1:-}" ;;
-  history)    cmd_history "${1:-}" ;;
-  campaign)   cmd_campaign "${1:-}" ;;
-  verify-mx)  cmd_verify_mx "${1:-}" ;;
-  segment)    cmd_segment "${1:-}" "${2:-}" ;;
+  contact)     cmd_contact "${1:-}" ;;
+  company)     cmd_company "${1:-}" ;;
+  history)     cmd_history "${1:-}" ;;
+  campaign)    cmd_campaign "${1:-}" ;;
+  verify-mx)   cmd_verify_mx "${1:-}" ;;
+  check-merge) cmd_check_merge "${1:-}" ;;
+  segment)     cmd_segment "${1:-}" "${2:-}" ;;
+
+  mark-email)  cmd_mark_email "${1:-}" "$(getflag status "$@")" ;;
+  dnc)         cmd_dnc "${1:-}" "$(getflag reason "$@")" ;;
+  merchant)
+      IS=""
+      [ -n "$(hasflag yes "$@")" ] && IS=true
+      [ -n "$(hasflag no  "$@")" ] && IS=false
+      cmd_merchant "${1:-}" "$IS" "$(getflag platform "$@")" ;;
+  propose)     cmd_propose "${1:-}" "$(getflag field "$@")" "$(getflag value "$@")" "$(getflag why "$@")" ;;
+  backfill-mx)
+      W=""; [ -n "$(hasflag write "$@")" ] && W="--write"
+      cmd_backfill_mx "${1:-}" "$W" ;;
+
   help|-h|--help) usage ;;
   *) echo -e "${RED}Unknown command: $CMD${NC}\n" >&2; usage >&2; exit 1 ;;
 esac
