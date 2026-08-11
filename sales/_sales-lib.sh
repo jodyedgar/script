@@ -156,6 +156,11 @@ fs_update() {
   update_ticket "$DOC_PATH" "$@"
 }
 
+# The sanctioned bypass. A human approving a proposal IS the authorization to
+# write an identity field, so `approve` uses this instead of fs_update.
+# Never call it directly from a command that isn't gated on human approval.
+fs_update_approved() { update_ticket "$@"; }
+
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%S.000000Z"; }
 
 # Resolve an email to its contacts/{id} path. Empty if not found.

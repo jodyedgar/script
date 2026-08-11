@@ -19,6 +19,12 @@
 #   sales.sh merchant <email> --yes|--no [--platform shopify]
 #   sales.sh backfill-mx <file> [--write]      dry run unless --write
 #   sales.sh propose <email> --field F --value V --why "..."
+#   sales.sh backfill-mx --sequence <id> --write   use live enrollments as source
+#
+# REVIEW
+#   sales.sh proposals [--status pending|approved|dropped]
+#   sales.sh approve <id> [--as "value"] [--also-field F --also-value V]
+#   sales.sh drop <id> --why "..."
 #
 # Add --json to any read command for raw JSON.
 
@@ -35,7 +41,7 @@ CMD="${1:-help}"; shift 2>/dev/null || true
 
 # ------------------------------------------------------------
 usage() {
-  sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 require() {
@@ -387,11 +393,22 @@ cmd_propose() {
 # sales.sh backfill-mx <file> [--write]
 # Reads every address in a file, MX-checks each domain, optionally records the result.
 cmd_backfill_mx() {
-  local FILE="$1" WRITE="${2:-}"; require "$FILE"
-  [ -f "$FILE" ] || { echo -e "${RED}No such file: $FILE${NC}" >&2; return 1; }
+  local SRC="$1" WRITE="${2:-}" SEQ="${3:-}"
+  local EMAILS
 
-  local EMAILS; EMAILS=$(grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$FILE" |
-                          tr '[:upper:]' '[:lower:]' | sort -u)
+  if [ -n "$SEQ" ]; then
+    # Preferred source: the live enrollment list. A markdown list can drift from
+    # who is actually enrolled; the sequence cannot.
+    EMAILS=$(fs_where sequenceEnrollments sequenceId EQUAL "$SEQ" 500 | fs_rows |
+             jq -r '.[].contactEmail // empty' | tr '[:upper:]' '[:lower:]' | sort -u)
+    echo -e "${CYAN}Source: live enrollments for sequence $SEQ${NC}"
+  else
+    require "$SRC"
+    [ -f "$SRC" ] || { echo -e "${RED}No such file: $SRC${NC}" >&2; return 1; }
+    EMAILS=$(grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$SRC" |
+             tr '[:upper:]' '[:lower:]' | sort -u)
+    echo -e "${CYAN}Source: $SRC${NC}"
+  fi
   local TOTAL=0 DEAD=0 WROTE=0 MISSING=0
   declare -a DEAD_LIST=()
 
@@ -428,6 +445,60 @@ cmd_backfill_mx() {
 }
 
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# Proposal review — the human gate
+# ------------------------------------------------------------
+
+cmd_proposals() {
+  local WANT="${1:-pending}"
+  local ROWS; ROWS=$(fs_where salesProposals status EQUAL "$WANT" 100 | fs_rows)
+  if [ "$JSON_OUT" = true ]; then echo "$ROWS"; return 0; fi
+  local N; N=$(echo "$ROWS" | jq 'length')
+  head1 "Proposals — $WANT ($N)"
+  [ "$N" = "0" ] && { echo "  none"; return 0; }
+  echo "$ROWS" | jq -r '.[] |
+    "  \(._path | sub("salesProposals/";""))\n    \(.field): \"\(.currentValue)\" → \"\(.proposedValue)\"\n    why: \(.reason)\n"'
+  echo "  Apply:  sales.sh approve <id> [--as \"value\"] [--also-field F --also-value V]"
+  echo "  Close:  sales.sh drop <id> --why \"...\""
+}
+
+# Human approval IS the authorization to write an identity field.
+cmd_approve() {
+  local PID="$1" OVERRIDE="${2:-}" AF="${3:-}" AV="${4:-}"; require "$PID"
+  local P; P=$(get_document "salesProposals/$PID" | fs_row)
+  [ -z "$(echo "$P" | jq -r '._path // empty')" ] && { echo -e "${RED}No proposal $PID${NC}"; return 1; }
+
+  local STATUS; STATUS=$(echo "$P" | jq -r '.status')
+  [ "$STATUS" != "pending" ] && { echo -e "${YELLOW}Already $STATUS — nothing done.${NC}"; return 1; }
+
+  local CPATH FIELD VALUE
+  CPATH=$(echo "$P" | jq -r '.contactPath')
+  FIELD=$(echo "$P" | jq -r '.field')
+  VALUE="${OVERRIDE:-$(echo "$P" | jq -r '.proposedValue')}"
+
+  if [ -n "$AF" ] && [ -n "$AV" ]; then
+    fs_update_approved "$CPATH" "$FIELD" "$VALUE" string "$AF" "$AV" string >/dev/null || return 1
+    printf "  ${GREEN}✓${NC} %s → %s=\"%s\", %s=\"%s\"\n" "$CPATH" "$FIELD" "$VALUE" "$AF" "$AV"
+  else
+    fs_update_approved "$CPATH" "$FIELD" "$VALUE" string >/dev/null || return 1
+    printf "  ${GREEN}✓${NC} %s → %s=\"%s\"\n" "$CPATH" "$FIELD" "$VALUE"
+  fi
+
+  fs_update "salesProposals/$PID" status approved string \
+      reviewedAt "$(now_iso)" timestamp appliedValue "$VALUE" string >/dev/null
+  echo "    Proposal marked approved."
+}
+
+cmd_drop() {
+  local PID="$1" WHY="${2:-}"; require "$PID"
+  [ -z "$WHY" ] && WHY="dropped without a recorded reason"
+  fs_update "salesProposals/$PID" status dropped string dropReason "$WHY" string \
+      reviewedAt "$(now_iso)" timestamp >/dev/null || return 1
+  printf "  ${GREEN}✓${NC} proposal %s dropped — %s\n" "$PID" "$WHY"
+  echo "    Contact unchanged. NOT added to do-not-contact — that list is opt-outs only."
+}
+
+# ------------------------------------------------------------
 getflag() { local want="$1"; shift; local prev=""
   for a in "$@"; do [ "$prev" = "--$want" ] && { echo "$a"; return; }; prev="$a"; done; }
 hasflag() { local want="$1"; shift
@@ -452,7 +523,10 @@ case "$CMD" in
   propose)     cmd_propose "${1:-}" "$(getflag field "$@")" "$(getflag value "$@")" "$(getflag why "$@")" ;;
   backfill-mx)
       W=""; [ -n "$(hasflag write "$@")" ] && W="--write"
-      cmd_backfill_mx "${1:-}" "$W" ;;
+      cmd_backfill_mx "${1:-}" "$W" "$(getflag sequence "$@")" ;;
+  proposals)   cmd_proposals "$(getflag status "$@")" ;;
+  approve)     cmd_approve "${1:-}" "$(getflag as "$@")" "$(getflag also-field "$@")" "$(getflag also-value "$@")" ;;
+  drop)        cmd_drop "${1:-}" "$(getflag why "$@")" ;;
 
   help|-h|--help) usage ;;
   *) echo -e "${RED}Unknown command: $CMD${NC}\n" >&2; usage >&2; exit 1 ;;
