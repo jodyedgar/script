@@ -20,6 +20,7 @@
 #   sales.sh backfill-mx <file> [--write]      dry run unless --write
 #   sales.sh propose <email> --field F --value V --why "..."
 #   sales.sh backfill-mx --sequence <id> --write   use live enrollments as source
+#   sales.sh merchant-probe --sequence <id> [--write]  populate isMerchant (Rung 1 gate)
 #
 # PLAYBOOK — markdown is authored locally, Firestore is what agents read
 #   sales.sh playbook status|diff             show drift vs what is live
@@ -451,6 +452,95 @@ cmd_backfill_mx() {
 
 # ------------------------------------------------------------
 # ------------------------------------------------------------
+# merchant-probe — populate isMerchant, the Rung 1 gate.
+#
+# Without this every prospect places at Rung 0 and the agent can do nothing
+# with them: "verified merchant" is a hard requirement for Rung 1.
+# ------------------------------------------------------------
+cmd_merchant_probe() {
+  local SRC="$1" WRITE="${2:-}" SEQ="${3:-}"
+  local EMAILS
+
+  if [ -n "$SEQ" ]; then
+    EMAILS=$(fs_where sequenceEnrollments sequenceId EQUAL "$SEQ" 500 | fs_rows |
+             jq -r '.[].contactEmail // empty' | tr '[:upper:]' '[:lower:]' | sort -u)
+    echo -e "${CYAN}Source: live enrollments for sequence $SEQ${NC}"
+  else
+    require "$SRC"
+    [ -f "$SRC" ] || { echo -e "${RED}No such file: $SRC${NC}" >&2; return 1; }
+    EMAILS=$(grep -oiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' "$SRC" |
+             tr '[:upper:]' '[:lower:]' | sort -u)
+    echo -e "${CYAN}Source: $SRC${NC}"
+  fi
+
+  [ "$WRITE" != "--write" ] && echo -e "${YELLOW}DRY RUN — add --write to record results.${NC}"
+  echo ""
+
+  local TOTAL=0 MERCH=0 NOT=0 UNREACH=0 WROTE=0 MISSING=0
+  while read -r E; do
+    [ -z "$E" ] && continue
+    TOTAL=$((TOTAL+1))
+    local D P; D=$(domain_of "$E"); P=$(probe_merchant "$D")
+
+    # Personal mailbox — fall back to whatever website is on the record. If there
+    # isn't one we learn nothing, and learning nothing must not become "false".
+    if [ "$P" = "free_email" ]; then
+      local SITE; SITE=$(find_contact "$E" | jq -r '.[0].websiteUrl // empty' |
+                         sed -E 's#^https?://##; s#/.*##' | tr '[:upper:]' '[:lower:]')
+      if [ -n "$SITE" ]; then
+        D="$SITE"; P=$(probe_merchant "$SITE")
+      fi
+    fi
+
+    case "$P" in
+      free_email)
+        UNREACH=$((UNREACH+1))
+        printf "  ${YELLOW}%-42s personal mailbox, no website on record — left unverified${NC}\n" "$D"
+        ;;
+      unreachable)
+        UNREACH=$((UNREACH+1))
+        printf "  ${YELLOW}%-42s unreachable${NC}\n" "$D"
+        ;;
+      not_merchant)
+        NOT=$((NOT+1))
+        printf "  ${RED}%-42s no store${NC}\n" "$D"
+        ;;
+      *)
+        MERCH=$((MERCH+1))
+        printf "  ${GREEN}%-42s %s${NC}\n" "$D" "$P"
+        ;;
+    esac
+
+    if [ "$WRITE" = "--write" ]; then
+      # Unreachable and personal-mailbox write NOTHING. Bot protection is
+      # indistinguishable from a dead site here, and a Gmail address says nothing
+      # about the person — isMerchant=false would disqualify a real merchant
+      # from Rung 1 permanently. Unverified is recoverable; false is not.
+      [ "$P" = "unreachable" ] && continue
+      [ "$P" = "free_email" ] && continue
+      local DOC; DOC=$(contact_doc_path "$E")
+      if [ -z "$DOC" ]; then MISSING=$((MISSING+1)); continue; fi
+      if [ "$P" = "not_merchant" ]; then
+        fs_update "$DOC" isMerchant false bool merchantCheckedAt "$(now_iso)" timestamp >/dev/null \
+          && WROTE=$((WROTE+1))
+      else
+        fs_update "$DOC" isMerchant true bool merchantPlatform "$P" string \
+                        merchantCheckedAt "$(now_iso)" timestamp >/dev/null \
+          && WROTE=$((WROTE+1))
+      fi
+    fi
+  done <<< "$EMAILS"
+
+  hr
+  printf "  %s domains · ${GREEN}%s merchants${NC} · ${RED}%s no store${NC} · ${YELLOW}%s unreachable${NC}\n" \
+    "$TOTAL" "$MERCH" "$NOT" "$UNREACH"
+  if [ "$WRITE" = "--write" ]; then
+    printf "  %s contacts updated · %s not found in Bucky\n" "$WROTE" "$MISSING"
+    [ "$UNREACH" -gt 0 ] && echo "  Unreachable domains were NOT written — they stay unverified, not disqualified."
+  fi
+}
+
+# ------------------------------------------------------------
 # playbook — promote authored markdown into Firestore.
 #
 # Local files are the authoring surface; salesPlaybook/{section} is what
@@ -632,6 +722,9 @@ case "$CMD" in
   backfill-mx)
       W=""; [ -n "$(hasflag write "$@")" ] && W="--write"
       cmd_backfill_mx "${1:-}" "$W" "$(getflag sequence "$@")" ;;
+  merchant-probe)
+      W=""; [ -n "$(hasflag write "$@")" ] && W="--write"
+      cmd_merchant_probe "${1:-}" "$W" "$(getflag sequence "$@")" ;;
   playbook)    cmd_playbook "${1:-status}" "${2:-}" ;;
   proposals)   cmd_proposals "$(getflag status "$@")" ;;
   approve)     cmd_approve "${1:-}" "$(getflag as "$@")" "$(getflag also-field "$@")" "$(getflag also-value "$@")" ;;

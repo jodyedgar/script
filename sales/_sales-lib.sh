@@ -191,6 +191,63 @@ create_proposal() {
           createdAt:    {timestampValue:$now}}}')"
 }
 
+# ============================================================
+# Merchant probe — the ICP gate
+#
+# "Verified merchant" is the entry requirement for Rung 1, and Bucky has no
+# native flag for it. Ranking BC contacts by warmth and seniority put a housing
+# authority, a contractor and an insurance broker at the top of an ecommerce
+# list; this is the check that fixes that.
+#
+# Echoes: "<platform>" | "not_merchant" | "unreachable"
+#
+# `unreachable` is deliberately NOT `not_merchant`. Bot protection and slow
+# hosts look identical to a dead site from here, and ~109 domains were dropped
+# that way on the Tier D build. Never write isMerchant=false on unreachable.
+# ============================================================
+# Free/ISP mailbox providers. Probing these tells you nothing about the CONTACT —
+# gmail.com has no store, but the founder using it may well run one. Never infer
+# merchant status from a personal mailbox; fall back to their website or leave
+# them unverified. Writing isMerchant=false here disqualifies a real merchant
+# from Rung 1 permanently.
+FREE_EMAIL_DOMAINS="gmail.com googlemail.com hotmail.com hotmail.ca outlook.com live.com live.ca msn.com yahoo.com yahoo.ca ymail.com aol.com icloud.com me.com mac.com shaw.ca telus.net rogers.com sympatico.ca bell.net protonmail.com proton.me gmx.com mail.com zoho.com fastmail.com"
+
+is_free_email_domain() {
+  local D; D=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+  for f in $FREE_EMAIL_DOMAINS; do [ "$D" = "$f" ] && return 0; done
+  return 1
+}
+
+probe_merchant() {
+  local DOMAIN="$1" BODY
+  is_free_email_domain "$DOMAIN" && { echo "free_email"; return; }
+  BODY=$(curl -sL --max-time 12 --compressed \
+    -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36" \
+    "https://$DOMAIN/" 2>/dev/null)
+
+  [ -z "$BODY" ] && { echo "unreachable"; return; }
+
+  # Most specific first — several platforms leave WordPress traces.
+  if grep -qiE 'cdn\.shopify\.com|/cdn/shop/|Shopify\.theme|myshopify\.com|shopify-features' <<<"$BODY"; then
+    echo "shopify"
+  elif grep -qiE 'woocommerce|wp-content/plugins/woocommerce|wc-ajax' <<<"$BODY"; then
+    echo "woocommerce"
+  elif grep -qiE 'cdn[0-9]*\.bigcommerce\.com|bigcommerce\.com/s-' <<<"$BODY"; then
+    echo "bigcommerce"
+  elif grep -qiE 'static\.wixstatic\.com.*(store|ecom)|wixstores' <<<"$BODY"; then
+    echo "wix"
+  elif grep -qiE 'Magento|mage/cookies|static/version.*/frontend' <<<"$BODY"; then
+    echo "magento"
+  elif grep -qiE 'squarespace' <<<"$BODY" && grep -qiE '/cart|commerce-' <<<"$BODY"; then
+    echo "squarespace"
+  # Generic cart signals — a store on something unrecognised.
+  elif grep -qiE 'add[ _-]?to[ _-]?cart|/checkout|shopping[ _-]?cart' <<<"$BODY"; then
+    echo "other_cart"
+  else
+    echo "not_merchant"
+  fi
+}
+
 # MX check — the deliverability gate. Echoes "live" or "no_mx".
 mx_status() {
   local DOMAIN="$1" MX
