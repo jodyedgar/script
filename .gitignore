@@ -23,3 +23,6 @@ service-account.json
 *.swp
 *.swo
 *~
+
+# QA logs written by ticket-qa.sh when run outside a project
+tickets/qa-logs/

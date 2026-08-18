@@ -504,9 +504,35 @@ else
     echo "QA Batch ID: $QA_BATCH_ID"
 fi
 
-# Save QA record to local log
-QA_LOG_DIR="$HOME/Dropbox/wwwroot/store.figma.com/shopify-the-figma-store/horizon/tests/results/qa-logs"
-mkdir -p "$QA_LOG_DIR" 2>/dev/null || true
+# Save QA record to local log, in the project the script was invoked from
+resolve_qa_log_dir() {
+    if [ -n "$TICKET_QA_LOG_DIR" ]; then
+        echo "$TICKET_QA_LOG_DIR"
+        return
+    fi
+
+    local SCRIPTS_ROOT PROJECT_ROOT
+    SCRIPTS_ROOT=$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null || true)
+    PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+    # Running from inside the scripts repo itself is not a project run
+    if [ -n "$PROJECT_ROOT" ] && [ "$PROJECT_ROOT" != "$SCRIPTS_ROOT" ]; then
+        if [ -d "$PROJECT_ROOT/tests/results" ]; then
+            echo "$PROJECT_ROOT/tests/results/qa-logs"
+        else
+            echo "$PROJECT_ROOT/.qa-tmp/qa-logs"
+        fi
+        return
+    fi
+
+    echo "$SCRIPT_DIR/qa-logs/$(basename "$PWD")"
+}
+
+QA_LOG_DIR="$(resolve_qa_log_dir)"
+if ! mkdir -p "$QA_LOG_DIR" 2>/dev/null; then
+    QA_LOG_DIR="$SCRIPT_DIR/qa-logs/_unresolved"
+    mkdir -p "$QA_LOG_DIR" 2>/dev/null || true
+fi
 
 QA_LOG_FILE="$QA_LOG_DIR/$QA_BATCH_ID.json"
 
