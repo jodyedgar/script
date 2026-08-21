@@ -34,9 +34,14 @@
 #                                which triggers: Gemini transcript -> Jody-voice audio ->
 #                                GIF+audio MP4 with captions. Review & approve in the
 #                                Job Reports admin screen (approve moves it to In Review).
-#   --gif FILE_OR_URL            REQUIRED with --job-report. Screen-capture GIF showing the
-#                                change working. Local files upload to Storage automatically.
-#                                Loops for the whole ~45s video: aim for a 10-20s clean loop.
+#   --video FILE_OR_URL          PREFERRED with --job-report. Smooth walkthrough MP4/WebM
+#                                (record with jobreport.sh — Browserless cloud recording of
+#                                the Shopify admin + storefront). Local files upload to
+#                                Storage automatically. Plays once; audio pads if shorter.
+#   --gif FILE_OR_URL            Screen-capture GIF. With --video it is just the thumbnail;
+#                                without --video it is the legacy loop for the whole ~45s
+#                                video (aim for a 10-20s clean loop). One of the two is
+#                                required with --job-report.
 #   --qa-notes TEXT              What you verified, in PLAIN CLIENT language — this text
 #                                feeds the client-facing voiceover. Falls back to --summary.
 #   --job-report-status          Show the ticket's job report (transcript, video, status).
@@ -88,6 +93,134 @@ get_theme_id_from_branch() {
     echo "$THEME_JSON" | jq -r '.[0].id // empty' 2>/dev/null || true
 }
 
+# Download a ticket's attachments + screenshots to a local folder so the dev
+# (or Cody's runner) can see what the client sent. URLs are public GCS objects,
+# so a plain curl is enough. $1 = QUERY_RESULT json, $2 = TICKET_ID.
+download_ticket_attachments() {
+    local QRESULT="$1"
+    local TID="$2"
+    local DEST="./ticket-attachments/$TID"
+
+    # Image/file URLs from: attachment objects (.url), legacy attachment strings,
+    # and the screenshots array (feedbucket/QA captures).
+    local URLS
+    URLS=$(echo "$QRESULT" | jq -r '
+        (.[0].document.fields // {}) as $f
+        | [
+            ( $f.attachments.arrayValue.values[]? | (.mapValue.fields.url.stringValue // .stringValue) ),
+            ( $f.screenshots.arrayValue.values[]?  | .stringValue )
+          ] | map(select(. != null and . != "")) | unique | .[]' 2>/dev/null)
+
+    [ -z "$URLS" ] && return 0
+
+    mkdir -p "$DEST"
+    local count=0
+    while IFS= read -r url; do
+        [ -z "$url" ] && continue
+        local fname
+        fname=$(basename "${url%%\?*}")
+        [ -z "$fname" ] && fname="attachment-$count"
+        if curl -fsSL "$url" -o "$DEST/$fname" 2>/dev/null; then
+            echo -e "  ${GREEN}$DEST/$fname${NC}"
+            count=$((count + 1))
+        fi
+    done <<< "$URLS"
+
+    if [ "$count" -gt 0 ]; then
+        echo -e "${GREEN}Pulled $count attachment(s) -> $DEST${NC}"
+    else
+        echo -e "${YELLOW}No attachments to pull${NC}"
+    fi
+    return 0
+}
+
+# ============================================================
+# PROJECT ASSETS (Sunbowl Asset Intake)
+# The ticket's project/client files live in the private sunbowl-intake
+# bucket. intakeTicketAssets (Bucky functions) resolves ticket -> project ->
+# assets and signs 1h download URLs. Auth is the same gcloud access token
+# this script already uses for the Firestore REST API.
+# ============================================================
+INTAKE_ASSETS_ENDPOINT="https://us-central1-bucky-app-355a3.cloudfunctions.net/intakeTicketAssets"
+
+# jq filter: human-readable byte size
+JQ_FMT_BYTES='def fmtb: if . >= 1073741824 then "\((. / 1073741824 * 100 | floor) / 100) GB" elif . >= 1048576 then "\((. / 1048576 * 10 | floor) / 10) MB" elif . >= 1024 then "\(. / 1024 | floor) KB" else "\(.) B" end;'
+
+fetch_ticket_assets_json() {
+    local TID="$1"
+    local TOKEN=$(get_auth_token)
+    curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" \
+        "$INTAKE_ASSETS_ENDPOINT?ticket=$TID" 2>/dev/null || true
+}
+
+# Print the ticket's intake files (project-assigned first). Never fails the
+# fetch — a cold start or network blip prints a note and moves on.
+list_project_assets() {
+    local TID="$1"
+    local JSON
+    JSON=$(fetch_ticket_assets_json "$TID")
+    if ! echo "$JSON" | jq -e '.ticket' >/dev/null 2>&1; then
+        echo -e "${YELLOW}Could not reach Asset Intake (skipping project files)${NC}"
+        return 0
+    fi
+    local P_COUNT=$(echo "$JSON" | jq '.projectAssets | length')
+    local O_COUNT=$(echo "$JSON" | jq '.otherClientAssets | length')
+    if [ "$P_COUNT" = "0" ] && [ "$O_COUNT" = "0" ]; then
+        echo -e "${YELLOW}No intake files for this ticket's client${NC}"
+        return 0
+    fi
+    if [ "$P_COUNT" != "0" ]; then
+        local PNAME=$(echo "$JSON" | jq -r '.ticket.projectName // "project"')
+        echo -e "Assigned to ${GREEN}$PNAME${NC}:"
+        echo "$JSON" | jq -r "$JQ_FMT_BYTES"' .projectAssets[] | "  \(.filename) (\(.sizeBytes | fmtb))"'
+    fi
+    if [ "$O_COUNT" != "0" ]; then
+        echo -e "Other files for this client: ${CYAN}$O_COUNT${NC}"
+        [ "$P_COUNT" = "0" ] && echo "$JSON" | jq -r "$JQ_FMT_BYTES"' .otherClientAssets[] | "  \(.filename) (\(.sizeBytes | fmtb))"'
+    fi
+    echo -e "Download: ${GREEN}$0 $TID --assets${NC} -> ./ticket-assets/$TID/"
+    return 0
+}
+
+# Download the ticket's intake files to ./ticket-assets/$TID/. Project-assigned
+# files when any exist, otherwise every active file for the client.
+download_project_assets() {
+    local TID="$1"
+    local DEST="./ticket-assets/$TID"
+    local JSON
+    JSON=$(fetch_ticket_assets_json "$TID")
+    if ! echo "$JSON" | jq -e '.ticket' >/dev/null 2>&1; then
+        echo -e "${RED}Could not reach Asset Intake${NC}"
+        echo "$JSON" | jq -r '.error // empty' 2>/dev/null
+        return 1
+    fi
+    local ROWS
+    ROWS=$(echo "$JSON" | jq -r 'if (.projectAssets | length) > 0 then .projectAssets else .otherClientAssets end | .[] | [.filename, .downloadUrl] | @tsv')
+    if [ -z "$ROWS" ]; then
+        echo -e "${YELLOW}No intake files for this ticket's client${NC}"
+        return 0
+    fi
+    if [ "$(echo "$JSON" | jq '.projectAssets | length')" = "0" ]; then
+        echo -e "${YELLOW}Nothing assigned to this ticket's project — pulling the client's files instead${NC}"
+    fi
+    mkdir -p "$DEST"
+    local count=0
+    while IFS=$'\t' read -r fname url; do
+        [ -z "$url" ] && continue
+        # Duplicate original filenames stay distinct on disk
+        local out="$DEST/$fname"
+        [ -e "$out" ] && out="$DEST/${count}-${fname}"
+        if curl -fsSL "$url" -o "$out" 2>/dev/null; then
+            echo -e "  ${GREEN}$out${NC}"
+            count=$((count + 1))
+        else
+            echo -e "  ${RED}Failed: $fname${NC}"
+        fi
+    done <<< "$ROWS"
+    echo -e "${GREEN}Pulled $count intake file(s) -> $DEST${NC}"
+    return 0
+}
+
 # ============================================================
 # JOB REPORT INTEGRATION (senior-dev cycle pickup)
 # Writes the same Firestore contract as the Bucky QA agent — see
@@ -105,7 +238,7 @@ check_job_report() {
 
     if [ -z "$JR_STATUS" ]; then
         echo -e "${YELLOW}No job report exists for this ticket yet.${NC}"
-        echo "Submit one with: $0 $TICKET_ID --job-report --gif <file-or-url> --qa-notes '...'"
+        echo "Submit one with: $0 $TICKET_ID --job-report --video <file-or-url> --qa-notes '...'"
         return 1
     fi
 
@@ -145,33 +278,51 @@ submit_job_report() {
         return 1
     fi
 
-    # ---- GIF: upload local file, or accept an https URL ----
-    local GIF_URL=""
-    local GIF_GS_PATH=""
-    if [ -z "$JR_GIF" ]; then
-        echo -e "${RED}Error: --job-report needs --gif <file-or-url>.${NC}"
+    # ---- Media: --video (smooth walkthrough MP4, preferred) and/or --gif
+    # (legacy loop, or the thumbnail when a video is supplied). At least one
+    # is required. Local files upload to Storage; https URLs pass through.
+    if [ -z "$JR_GIF" ] && [ -z "$JR_VIDEO" ]; then
+        echo -e "${RED}Error: --job-report needs --video <file-or-url> and/or --gif <file-or-url>.${NC}"
         return 1
     fi
-    if [[ "$JR_GIF" =~ ^https?:// ]]; then
-        GIF_URL="$JR_GIF"
-    elif [ -f "$JR_GIF" ]; then
-        if ! command -v gsutil >/dev/null 2>&1; then
-            echo -e "${RED}Error: gsutil not found (needed to upload the GIF).${NC}"
-            return 1
-        fi
-        local OBJ="qa_screenshots/$TICKET_ID/jobreport-$(date +%s).gif"
-        echo "Uploading GIF to Storage..."
-        if ! gsutil -q cp "$JR_GIF" "gs://$STORAGE_BUCKET/$OBJ"; then
-            echo -e "${RED}GIF upload failed${NC}"
-            return 1
-        fi
-        gsutil -q acl ch -u AllUsers:R "gs://$STORAGE_BUCKET/$OBJ"
-        GIF_URL="https://storage.googleapis.com/$STORAGE_BUCKET/$OBJ"
-        GIF_GS_PATH="gs://$STORAGE_BUCKET/$OBJ"
-        echo -e "${GREEN}GIF uploaded: $GIF_URL${NC}"
-    else
-        echo -e "${RED}Error: --gif '$JR_GIF' is neither a file nor an https URL${NC}"
+    if ! command -v gsutil >/dev/null 2>&1 && { [ -f "$JR_GIF" ] || [ -f "$JR_VIDEO" ]; }; then
+        echo -e "${RED}Error: gsutil not found (needed to upload media).${NC}"
         return 1
+    fi
+
+    # upload_jr_media <path-or-url> <ext> <label> -> sets MEDIA_URL / MEDIA_GS_PATH
+    upload_jr_media() {
+        local SRC="$1" EXT="$2" LABEL="$3"
+        MEDIA_URL=""; MEDIA_GS_PATH=""
+        if [[ "$SRC" =~ ^https?:// ]]; then
+            MEDIA_URL="$SRC"
+        elif [ -f "$SRC" ]; then
+            local OBJ="qa_screenshots/$TICKET_ID/jobreport-$(date +%s).$EXT"
+            echo "Uploading $LABEL to Storage..."
+            if ! gsutil -q cp "$SRC" "gs://$STORAGE_BUCKET/$OBJ"; then
+                echo -e "${RED}$LABEL upload failed${NC}"
+                return 1
+            fi
+            gsutil -q acl ch -u AllUsers:R "gs://$STORAGE_BUCKET/$OBJ"
+            MEDIA_URL="https://storage.googleapis.com/$STORAGE_BUCKET/$OBJ"
+            MEDIA_GS_PATH="gs://$STORAGE_BUCKET/$OBJ"
+            echo -e "${GREEN}$LABEL uploaded: $MEDIA_URL${NC}"
+        else
+            echo -e "${RED}Error: $LABEL '$SRC' is neither a file nor an https URL${NC}"
+            return 1
+        fi
+    }
+
+    local GIF_URL="" GIF_GS_PATH="" VIDEO_URL="" VIDEO_GS_PATH=""
+    if [ -n "$JR_VIDEO" ]; then
+        local VEXT="${JR_VIDEO##*.}"
+        [[ "$VEXT" =~ ^(mp4|webm|mov)$ ]] || VEXT="mp4"
+        upload_jr_media "$JR_VIDEO" "$VEXT" "video" || return 1
+        VIDEO_URL="$MEDIA_URL"; VIDEO_GS_PATH="$MEDIA_GS_PATH"
+    fi
+    if [ -n "$JR_GIF" ]; then
+        upload_jr_media "$JR_GIF" "gif" "GIF" || return 1
+        GIF_URL="$MEDIA_URL"; GIF_GS_PATH="$MEDIA_GS_PATH"
     fi
 
     # ---- Attempt: increment past any previous QA round ----
@@ -188,8 +339,14 @@ submit_job_report() {
 
     # ---- The contract write: agentQa + aiPipelineState in ONE update ----
     local NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.000000Z")
+    local GIF_URL_JSON='{"nullValue":null}'
+    [ -n "$GIF_URL" ] && GIF_URL_JSON="{\"stringValue\":\"$GIF_URL\"}"
     local GIF_PATH_JSON='{"nullValue":null}'
     [ -n "$GIF_GS_PATH" ] && GIF_PATH_JSON="{\"stringValue\":\"$GIF_GS_PATH\"}"
+    local VIDEO_URL_JSON='{"nullValue":null}'
+    [ -n "$VIDEO_URL" ] && VIDEO_URL_JSON="{\"stringValue\":\"$VIDEO_URL\"}"
+    local VIDEO_PATH_JSON='{"nullValue":null}'
+    [ -n "$VIDEO_GS_PATH" ] && VIDEO_PATH_JSON="{\"stringValue\":\"$VIDEO_GS_PATH\"}"
     local NOTES_ESCAPED=$(printf '%s' "$NOTES" | jq -Rs '.')
 
     local WRITE_RESULT=$(curl -s -X PATCH "$FIRESTORE_BASE/$DOC_PATH?updateMask.fieldPaths=agentQa&updateMask.fieldPaths=aiPipelineState&updateMask.fieldPaths=updatedAt" \
@@ -198,8 +355,10 @@ submit_job_report() {
         -d "{\"fields\":{
             \"agentQa\":{\"mapValue\":{\"fields\":{
                 \"verdict\":{\"stringValue\":\"pass\"},
-                \"gifUrl\":{\"stringValue\":\"$GIF_URL\"},
+                \"gifUrl\":$GIF_URL_JSON,
                 \"gifStoragePath\":$GIF_PATH_JSON,
+                \"videoUrl\":$VIDEO_URL_JSON,
+                \"videoStoragePath\":$VIDEO_PATH_JSON,
                 \"notes\":{\"stringValue\":$NOTES_ESCAPED},
                 \"runId\":{\"nullValue\":null},
                 \"attempt\":{\"integerValue\":\"$ATTEMPT\"},
@@ -262,9 +421,16 @@ show_usage() {
     echo "  --qa-after                   Capture FULL PAGE Chrome screenshot"
     echo "  --qa-after-file FILE         Upload file as QA After"
     echo ""
+    echo "Attachments:"
+    echo "  --pull-attachments           Download this ticket's screenshots/attachments"
+    echo "  --assets                     Download the ticket project's Asset Intake files"
+    echo "                               (brand assets etc.) -> ./ticket-assets/TICK-###/"
+    echo "                               to ./ticket-attachments/TICK-### (auto on fetch)"
+    echo ""
     echo "Job Report Options (AI video job report for the client):"
-    echo "  --job-report                 Submit to the job-report pipeline (needs --gif)"
-    echo "  --gif FILE_OR_URL            Screen-capture GIF of the change (10-20s clean loop)"
+    echo "  --job-report                 Submit to the job-report pipeline (needs --video and/or --gif)"
+    echo "  --video FILE_OR_URL          Smooth walkthrough MP4/WebM (record with jobreport.sh)"
+    echo "  --gif FILE_OR_URL            GIF: thumbnail alongside --video, or legacy 10-20s loop alone"
     echo "  --qa-notes TEXT              What you verified, in plain client language"
     echo "                               (feeds the voiceover; falls back to --summary)"
     echo "  --job-report-status          Show this ticket's job report status/video"
@@ -532,18 +698,17 @@ $FILE_BODY"; else CONTENT="$FILE_BODY"; fi
         [ "$UPLOAD_TICKET" = "(pending)" ] && UPLOAD_TICKET=$(echo "$DOC_PATH" | sed 's|.*/||')
         local ATTACH_TEXT="Attachments:"
         for f in "${ATTACHMENTS[@]}"; do
-            local UP=$(cd "$QA_DIR" && node upload-attachment.js --file "$f" --ticket "$UPLOAD_TICKET" 2>&1)
+            # --doc-path makes the uploader arrayUnion the attachment object (and
+            # the URL onto screenshots if it's an image) straight onto the ticket.
+            local UP=$(cd "$QA_DIR" && node upload-attachment.js --file "$f" --ticket "$UPLOAD_TICKET" --doc-path "$DOC_PATH" 2>&1)
             local URL=$(echo "$UP" | jq -r '.url // empty' 2>/dev/null)
             local FNAME=$(echo "$UP" | jq -r '.name // empty' 2>/dev/null)
-            local IS_IMG=$(echo "$UP" | jq -r '.isImage // false' 2>/dev/null)
             if [ -z "$URL" ]; then
                 echo -e "  ${YELLOW}Failed: $f${NC}"
                 echo "$UP" | jq -r '.error // empty' 2>/dev/null
                 continue
             fi
             echo -e "  ${GREEN}$FNAME -> uploaded${NC}"
-            update_ticket_array "$DOC_PATH" "attachments" "$URL"
-            [ "$IS_IMG" = "true" ] && update_ticket_array "$DOC_PATH" "screenshots" "$URL"
             ATTACH_TEXT="$ATTACH_TEXT
 - $FNAME: $URL"
         done
@@ -592,8 +757,10 @@ QA_AFTER=false
 QA_AFTER_FILE=""
 JOB_REPORT=false
 JR_GIF=""
+JR_VIDEO=""
 JR_NOTES=""
 JR_STATUS_ONLY=false
+PULL_ATTACHMENTS=false
 FETCH_ONLY=true
 
 # Parse arguments
@@ -611,8 +778,11 @@ while [[ $# -gt 0 ]]; do
         --qa-after-file) QA_AFTER_FILE="$2"; FETCH_ONLY=false; shift 2 ;;
         --job-report) JOB_REPORT=true; FETCH_ONLY=false; shift ;;
         --gif) JR_GIF="$2"; shift 2 ;;
+        --video) JR_VIDEO="$2"; shift 2 ;;
         --qa-notes) JR_NOTES="$2"; shift 2 ;;
         --job-report-status) JR_STATUS_ONLY=true; FETCH_ONLY=false; shift ;;
+        --pull-attachments) PULL_ATTACHMENTS=true; FETCH_ONLY=false; shift ;;
+        --assets) DOWNLOAD_ASSETS=true; FETCH_ONLY=false; shift ;;
         --help|-h) show_usage ;;
         *) echo -e "${RED}Error: Unknown option: $1${NC}"; show_usage ;;
     esac
@@ -725,6 +895,21 @@ if [ "$FETCH_ONLY" = true ]; then
         echo "----------------------------------------"
         echo "$TICKET_CONTENT"
     fi
+
+    # Pull any client-supplied screenshots/attachments into the working repo so
+    # they're right there while working the ticket.
+    echo ""
+    echo -e "${BLUE}ATTACHMENTS:${NC}"
+    echo "----------------------------------------"
+    download_ticket_attachments "$QUERY_RESULT" "$TICKET_ID"
+
+    # List the project's intake files (brand assets etc.) so whoever pulls the
+    # ticket knows what the client has supplied. Listing only — download with
+    # --assets (files can be GBs).
+    echo ""
+    echo -e "${BLUE}PROJECT FILES (Asset Intake):${NC}"
+    echo "----------------------------------------"
+    list_project_assets "$TICKET_ID"
 
     # Update status to "In Progress" if appropriate
     if [[ "$CURRENT_STATUS" != "Done" && "$CURRENT_STATUS" != "Complete" && "$CURRENT_STATUS" != "In Progress" ]]; then
@@ -881,6 +1066,20 @@ if [ -n "$QA_AFTER_FILE" ]; then
             echo -e "${YELLOW}QA After upload failed${NC}"
         fi
     fi
+fi
+
+# Pull attachments on demand (update mode)
+if [ "$PULL_ATTACHMENTS" = true ]; then
+    echo ""
+    echo -e "${BLUE}Pulling attachments...${NC}"
+    download_ticket_attachments "$QUERY_RESULT" "$TICKET_ID"
+fi
+
+# Pull the project's intake files on demand (update mode)
+if [ "$DOWNLOAD_ASSETS" = true ]; then
+    echo ""
+    echo -e "${BLUE}Pulling project files (Asset Intake)...${NC}"
+    download_project_assets "$TICKET_ID"
 fi
 
 # Handle job-report submission (after QA so a combined
