@@ -998,6 +998,11 @@ if [ -n "$NEW_PAGE_URL" ]; then
     HAS_UPDATES=true
 fi
 
+if [ -n "$PR_URL" ]; then
+    UPDATE_ARGS+=("aiPrUrl" "$PR_URL" "string")
+    HAS_UPDATES=true
+fi
+
 # Update properties if any
 if [ "$HAS_UPDATES" = true ]; then
     RESULT=$(update_ticket "$DOC_PATH" "${UPDATE_ARGS[@]}")
@@ -1006,6 +1011,7 @@ if [ "$HAS_UPDATES" = true ]; then
         [ -n "$NEW_STATUS" ] && echo -e "${GREEN}Status updated to '$NEW_STATUS'${NC}"
         [ -n "$THEME_ID" ] && echo -e "${GREEN}Theme ID updated to $THEME_ID${NC}"
         [ -n "$NEW_PAGE_URL" ] && echo -e "${GREEN}Page URL updated to $NEW_PAGE_URL${NC}"
+        [ -n "$PR_URL" ] && echo -e "${GREEN}PR URL updated to $PR_URL${NC}"
     else
         echo -e "${RED}Error updating properties${NC}"
         echo "$RESULT" | jq '.' 2>/dev/null || echo "$RESULT"
