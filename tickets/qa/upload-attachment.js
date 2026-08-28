@@ -16,6 +16,7 @@
 
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { readFileSync, existsSync } from 'fs';
 import { basename, extname } from 'path';
 import { fileURLToPath } from 'url';
@@ -48,8 +49,11 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--file' || args[i] === '-f') parsed.file = args[++i];
     else if (args[i] === '--ticket' || args[i] === '-t') parsed.ticket = args[++i];
+    // When given, also attach the uploaded file to the ticket doc (arrayUnion an
+    // attachment object) so the CLI writes the same object shape as the app.
+    else if (args[i] === '--doc-path' || args[i] === '-D') parsed.docPath = args[++i];
     else if (args[i] === '--help' || args[i] === '-h') {
-      console.log('Usage: node upload-attachment.js --file <path> --ticket <TICK-### | tmp-id>');
+      console.log('Usage: node upload-attachment.js --file <path> --ticket <TICK-### | tmp-id> [--doc-path tickets/<id>]');
       process.exit(0);
     }
   }
@@ -106,6 +110,23 @@ async function main() {
     await file.save(buffer, { metadata: { contentType } });
     await file.makePublic();
     const url = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+
+    // Optionally attach to the ticket doc directly (object shape, matches the app).
+    if (args.docPath) {
+      const db = getFirestore();
+      const attachment = {
+        url, name: origName, contentType, isImage,
+        source: 'cli', storagePath,
+        // Timestamp.now() — never serverTimestamp inside arrayUnion.
+        uploadedAt: Timestamp.now(),
+      };
+      const update = {
+        attachments: FieldValue.arrayUnion(attachment),
+        updatedAt: Timestamp.now(),
+      };
+      if (isImage) update.screenshots = FieldValue.arrayUnion(url);
+      await db.doc(args.docPath).update(update);
+    }
 
     console.log(JSON.stringify({
       success: true,

@@ -988,7 +988,7 @@ HAS_UPDATES=false
 # screen is what sets "In Review". Setting it here too would drop the ticket
 # into the admin QA queue while the report is still a draft, so defer it.
 if [ "$JOB_REPORT" = true ] && [ "$NEW_STATUS" = "In Review" ]; then
-    echo -e "${YELLOW}--status 'In Review' deferred: approving the job report moves the ticket to In Review${NC}"
+    echo -e "${BLUE}--status 'In Review' deferred: approving the job report moves the ticket to In Review${NC}"
     NEW_STATUS=""
 fi
 
