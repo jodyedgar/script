@@ -164,3 +164,15 @@ echo "2. Connect to GitHub: git remote add origin <repo-url>"
 echo "3. Push: git push -u origin main"
 echo "4. Connect GitHub to Shopify theme in Shopify admin"
 echo "5. Start developing - changes push to GitHub and sync to Shopify"
+echo ""
+# Job-report admin session: bucky-qa records the client walkthrough in a cloud
+# browser and needs a saved Shopify-admin cookie jar to show the theme editor.
+# Save it now while the store is fresh (re-run when it expires, ~14 days).
+STORE_HANDLE="${STORE_NAME%%.*}"
+echo -e "${YELLOW}Job reports: save this store's Shopify admin session for walkthrough recordings?${NC}"
+read -r -p "Run 'jobreport.sh auth $STORE_HANDLE' now? [Y/n] " SAVE_COOKIES
+if [[ ! "$SAVE_COOKIES" =~ ^[Nn] ]]; then
+    "$HOME/Dropbox/scripts/jobreport.sh" auth "$STORE_HANDLE" || echo -e "${YELLOW}Skipped — run later: jobreport.sh auth $STORE_HANDLE${NC}"
+else
+    echo "Later: ~/Dropbox/scripts/jobreport.sh auth $STORE_HANDLE"
+fi
