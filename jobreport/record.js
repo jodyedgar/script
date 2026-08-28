@@ -163,13 +163,13 @@ async function recordSegment(scenario, segment, token, outFile) {
         const origin = new URL(first.goto).origin;
         try {
           await page.goto(`${origin}/password`, {waitUntil: "domcontentloaded", timeout: 30000});
-          const input = await page.$("input[name=password], input#password, input[type=password]");
-          if (input) {
-            await input.type(scenario.storefrontPassword, {delay: 20});
-            await Promise.all([
-              page.waitForNavigation({waitUntil: "domcontentloaded", timeout: 30000}).catch(() => {}),
-              page.keyboard.press("Enter"),
-            ]);
+          if (/\/password/.test(page.url())) {
+            // The form POST is the reliable path (Enter/Submit clicks don't submit on every theme).
+            await page.evaluate(async (pw) => {
+              const fd = new URLSearchParams({form_type: "storefront_password", utf8: "✓", password: pw});
+              await fetch("/password", {method: "POST", body: fd, redirect: "manual", headers: {"content-type": "application/x-www-form-urlencoded"}});
+            }, scenario.storefrontPassword);
+            await page.goto(new URL(page.url()).origin + "/", {waitUntil: "domcontentloaded", timeout: 30000});
           }
           console.log(`  [${segment.name}] storefront password ${/\/password/.test(page.url()) ? "NOT accepted" : "accepted"}`);
         } catch (err) {
