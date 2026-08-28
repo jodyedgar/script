@@ -1,0 +1,27 @@
+{
+  "store": "mystore",
+  "viewport": {"width": 1440, "height": 900},
+  "thumbnail": {"start": 0, "duration": 8},
+  "segments": [
+    {
+      "name": "admin",
+      "auth": true,
+      "steps": [
+        {"goto": "https://admin.shopify.com/store/mystore/themes"},
+        {"pause": 3},
+        {"smoothScroll": {"to": 500, "duration": 4}},
+        {"pause": 2}
+      ]
+    },
+    {
+      "name": "storefront",
+      "steps": [
+        {"goto": "https://mystore.com/collections/all"},
+        {"hide": ".cookie-banner, #shopify-pc__banner"},
+        {"pause": 2},
+        {"smoothScroll": {"to": "bottom", "duration": 12}},
+        {"pause": 2}
+      ]
+    }
+  ]
+}
