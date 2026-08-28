@@ -33,7 +33,8 @@
 #                                same Firestore contract as Bucky QA (agentQa + qa_pass),
 #                                which triggers: Gemini transcript -> Jody-voice audio ->
 #                                GIF+audio MP4 with captions. Review & approve in the
-#                                Job Reports admin screen (approve moves it to In Review).
+#                                Job Reports admin screen (approve moves it to In Review —
+#                                do NOT pass --status "In Review" alongside; it is deferred).
 #   --video FILE_OR_URL          PREFERRED with --job-report. Smooth walkthrough MP4/WebM
 #                                (record with jobreport.sh — Browserless cloud recording of
 #                                the Shopify admin + storefront). Local files upload to
@@ -982,6 +983,14 @@ fi
 # Build update args
 UPDATE_ARGS=()
 HAS_UPDATES=false
+
+# --job-report owns the hand-off to QA: approving the report in the Job Reports
+# screen is what sets "In Review". Setting it here too would drop the ticket
+# into the admin QA queue while the report is still a draft, so defer it.
+if [ "$JOB_REPORT" = true ] && [ "$NEW_STATUS" = "In Review" ]; then
+    echo -e "${YELLOW}--status 'In Review' deferred: approving the job report moves the ticket to In Review${NC}"
+    NEW_STATUS=""
+fi
 
 if [ -n "$NEW_STATUS" ]; then
     UPDATE_ARGS+=("status" "$NEW_STATUS" "string")
