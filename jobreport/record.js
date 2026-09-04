@@ -78,6 +78,19 @@ function normalizeSelector(sel) {
   return m ? `::-p-text(${m[1].replace(/^["']|["']$/g, "")})` : sel;
 }
 
+// Find a selector in the main frame OR any child frame (Shopify's theme editor
+// renders its whole UI inside an online-store-web iframe). Resolves with the
+// first frame that has it; rejects when none does within the timeout.
+async function findInFrames(page, sel, {visible = false, timeout = 15000} = {}) {
+  const frames = page.frames();
+  let rejections = 0;
+  return new Promise((resolve, reject) => {
+    for (const f of frames) {
+      f.waitForSelector(sel, {visible, timeout}).then((h) => h && resolve(h)).catch(() => { if (++rejections === frames.length) reject(new Error(`Waiting for selector \`${sel}\` failed in ${frames.length} frame(s)`)); });
+    }
+  });
+}
+
 async function runStep(page, step) {
   if (step.goto) {
     try {
@@ -137,8 +150,8 @@ async function runStep(page, step) {
   }
   if (step.click) {
     const sel = normalizeSelector(step.click);
-    await page.waitForSelector(sel, {visible: true, timeout: 15000});
-    return page.click(sel);
+    const el = await findInFrames(page, sel, {visible: true});
+    return el.click();
   }
   if (step.clickIf) {
     // Click only when present — for optional UI (e.g. an AI follow-up step
@@ -151,7 +164,7 @@ async function runStep(page, step) {
     return;
   }
   if (step.waitFor) {
-    return page.waitForSelector(normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
+    return findInFrames(page, normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
   }
   if (step.hide) {
     return page.evaluate((sel) => {
@@ -160,8 +173,8 @@ async function runStep(page, step) {
   }
   if (step.type) {
     const {selector, text, delay = 40} = step.type;
-    await page.waitForSelector(selector, {visible: true, timeout: 15000});
-    return page.type(selector, text, {delay});
+    const el = await findInFrames(page, normalizeSelector(selector), {visible: true});
+    return el.type(text, {delay});
   }
   throw new Error(`unknown step: ${JSON.stringify(step)}`);
 }
