@@ -70,6 +70,14 @@ async function ensureTextPaints(page) {
   } catch { /* non-fatal — worst case the page records as-is */ }
 }
 
+// "text=Collections" (Playwright-style, which the QA agent tends to emit) is not
+// a puppeteer selector; map it to puppeteer's ::-p-text() so it matches by
+// visible text instead of failing as a bogus CSS selector.
+function normalizeSelector(sel) {
+  const m = /^text=(.+)$/.exec(String(sel).trim());
+  return m ? `::-p-text(${m[1].replace(/^["']|["']$/g, "")})` : sel;
+}
+
 async function runStep(page, step) {
   if (step.goto) {
     try {
@@ -88,32 +96,49 @@ async function runStep(page, step) {
   if (step.smoothScroll) {
     const {to = "bottom", duration = 8} = step.smoothScroll;
     return page.evaluate(async (to, durMs) => {
+      // Some themes lock html/body (overflow:hidden, 100dvh) and scroll an inner
+      // wrapper instead (e.g. Horizon's .page-wrapper on desktop). window.scrollTo
+      // is a silent no-op there, so scroll whichever element actually scrolls.
+      const docEl = document.scrollingElement || document.documentElement;
+      let box = null; // null = window
+      if (getComputedStyle(document.documentElement).overflowY === "hidden" || docEl.scrollHeight <= innerHeight + 1) {
+        for (const el of document.querySelectorAll("body, body *")) {
+          const cs = getComputedStyle(el);
+          if (/(auto|scroll)/.test(cs.overflowY) && el.scrollHeight > el.clientHeight + 50 && el.clientHeight >= innerHeight * 0.5 &&
+              (!box || el.scrollHeight > box.scrollHeight)) box = el;
+        }
+      }
+      const pos = () => (box ? box.scrollTop : scrollY);
+      const setPos = (y) => { if (box) box.scrollTop = y; else scrollTo(0, y); };
+      const maxScroll = box ? box.scrollHeight - box.clientHeight : docEl.scrollHeight - innerHeight;
       let target;
       if (to === "bottom") {
-        target = document.documentElement.scrollHeight - innerHeight;
+        target = maxScroll;
       } else if (typeof to === "number") {
         target = to;
       } else {
         const el = document.querySelector(to);
         if (!el) return;
-        target = el.getBoundingClientRect().top + scrollY - innerHeight / 3;
+        target = el.getBoundingClientRect().top + pos() - innerHeight / 3;
       }
-      const from = scrollY;
+      target = Math.max(0, Math.min(target, maxScroll));
+      const from = pos();
       const start = performance.now();
       await new Promise((resolve) => {
         (function frame(now) {
           const t = Math.min((now - start) / durMs, 1);
           // ease-in-out
           const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-          scrollTo(0, from + (target - from) * e);
+          setPos(from + (target - from) * e);
           t < 1 ? requestAnimationFrame(frame) : resolve();
         })(performance.now());
       });
     }, to, duration * 1000);
   }
   if (step.click) {
-    await page.waitForSelector(step.click, {visible: true, timeout: 15000});
-    return page.click(step.click);
+    const sel = normalizeSelector(step.click);
+    await page.waitForSelector(sel, {visible: true, timeout: 15000});
+    return page.click(sel);
   }
   if (step.clickIf) {
     // Click only when present — for optional UI (e.g. an AI follow-up step
@@ -126,7 +151,7 @@ async function runStep(page, step) {
     return;
   }
   if (step.waitFor) {
-    return page.waitForSelector(step.waitFor, {timeout: (step.timeout || 15) * 1000});
+    return page.waitForSelector(normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
   }
   if (step.hide) {
     return page.evaluate((sel) => {
