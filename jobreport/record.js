@@ -79,16 +79,29 @@ function normalizeSelector(sel) {
 }
 
 // Find a selector in the main frame OR any child frame (Shopify's theme editor
-// renders its whole UI inside an online-store-web iframe). Resolves with the
-// first frame that has it; rejects when none does within the timeout.
+// renders its whole UI inside an online-store-web iframe that attaches a few
+// seconds after the top document settles). Polls the LIVE frame list until the
+// deadline, so late-attaching frames are searched too.
 async function findInFrames(page, sel, {visible = false, timeout = 15000} = {}) {
-  const frames = page.frames();
-  let rejections = 0;
-  return new Promise((resolve, reject) => {
+  const deadline = Date.now() + timeout;
+  let frameCount = 0;
+  while (Date.now() < deadline) {
+    const frames = page.frames();
+    frameCount = frames.length;
     for (const f of frames) {
-      f.waitForSelector(sel, {visible, timeout}).then((h) => h && resolve(h)).catch(() => { if (++rejections === frames.length) reject(new Error(`Waiting for selector \`${sel}\` failed in ${frames.length} frame(s)`)); });
+      let h = null;
+      try { h = await f.$(sel); } catch { continue; } // detached frame / mid-navigation
+      if (!h) continue;
+      if (!visible) return h;
+      const ok = await h.evaluate((e) => {
+        const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+        return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
+      }).catch(() => false);
+      if (ok) return h;
     }
-  });
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`Waiting for selector \`${sel}\` failed (${frameCount} frame(s), ${timeout}ms)`);
 }
 
 async function runStep(page, step) {
