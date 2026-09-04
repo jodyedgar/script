@@ -21,6 +21,7 @@
 //       {"pause": 3},
 //       {"smoothScroll": {"to": 600, "duration": 4}}
 //     ]},
+//     {"name": "storefront-mobile", "viewport": {"width": 390, "height": 844}, "steps": [  // per-segment viewport is optional
 //     {"name": "storefront", "steps": [
 //       {"goto": "https://mystore.com/collections/all"},
 //       {"hide": "#cookie-banner"},
@@ -144,8 +145,11 @@ async function recordSegment(scenario, segment, token, outFile) {
   const browser = await puppeteer.connect({browserWSEndpoint: browserlessWsUrl(token)});
   try {
     const page = await browser.newPage();
-    const vp = scenario.viewport || {width: 1440, height: 900};
-    await page.setViewport(vp);
+    // A segment may carry its own viewport (e.g. a 390x844 mobile pass after
+    // the desktop pass); fall back to the scenario-wide one.
+    const vp = segment.viewport || scenario.viewport || {width: 1440, height: 900};
+    const mobile = vp.width < 768;
+    await page.setViewport({...vp, isMobile: mobile, hasTouch: mobile});
 
     if (segment.auth) {
       if (!scenario.store) fail(`segment "${segment.name}" has auth:true but scenario has no "store"`);
@@ -241,7 +245,12 @@ async function main() {
   const videoPath = path.join(outDir, "walkthrough.mp4");
   const inputs = segFiles.flatMap((f) => ["-i", f]);
   const n = segFiles.length;
-  const filter = segFiles.map((_, i) => `[${i}:v]fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[v${i}]`).join(";") +
+  // Segments can differ in size (desktop + mobile viewports); concat needs one
+  // frame size, so letterbox every segment onto the scenario-wide canvas.
+  const canvas = scenario.viewport || {width: 1440, height: 900};
+  const W = Math.trunc(canvas.width / 2) * 2, H = Math.trunc(canvas.height / 2) * 2;
+  const filter = segFiles.map((_, i) =>
+    `[${i}:v]fps=30,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1[v${i}]`).join(";") +
     `;${segFiles.map((_, i) => `[v${i}]`).join("")}concat=n=${n}:v=1:a=0[v]`;
   ffmpeg([...inputs, "-filter_complex", filter, "-map", "[v]",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
