@@ -30,7 +30,7 @@
 //   ]
 // }
 //
-// Steps: goto | pause | smoothScroll | click | waitFor | hide | type
+// Steps: goto | pause | smoothScroll | click | clickIf | clickLabel | waitFor | hide | type
 const fs = require("fs");
 const path = require("path");
 const {execFileSync} = require("child_process");
@@ -101,7 +101,35 @@ async function findInFrames(page, sel, {visible = false, timeout = 15000} = {}) 
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error(`Waiting for selector \`${sel}\` failed (${frameCount} frame(s), ${timeout}ms)`);
+  const urls = page.frames().map((f) => f.url().slice(0, 80)).join(" | ");
+  throw new Error(`Waiting for selector \`${sel}\` failed (${frameCount} frame(s), ${timeout}ms) — frames: ${urls} — page: ${page.url().slice(0, 100)}`);
+}
+
+// Click the control behind a form <label> whose text contains `text` — used for
+// theme-editor switches/checkboxes. Fires a DOM click on the associated control
+// (no coordinates: text matches can resolve to large ancestors whose centre is
+// somewhere else on the page entirely, e.g. inside the preview iframe).
+async function clickLabel(page, text, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    for (const f of page.frames()) {
+      let done = false;
+      try {
+        done = await f.evaluate((t) => {
+          const lab = [...document.querySelectorAll("label")].find((l) => (l.textContent || "").replace(/\s+/g, " ").trim().includes(t));
+          if (!lab) return false;
+          const ctrl = lab.control || (lab.getAttribute("for") && document.getElementById(lab.getAttribute("for"))) || lab.querySelector("input, button");
+          const target = ctrl || lab;
+          target.scrollIntoView({block: "center"});
+          target.click();
+          return true;
+        }, text);
+      } catch { continue; }
+      if (done) return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`clickLabel: no <label> containing "${text}" in any frame (${timeout}ms)`);
 }
 
 async function runStep(page, step) {
@@ -165,6 +193,9 @@ async function runStep(page, step) {
     const sel = normalizeSelector(step.click);
     const el = await findInFrames(page, sel, {visible: true});
     return el.click();
+  }
+  if (step.clickLabel) {
+    return clickLabel(page, step.clickLabel);
   }
   if (step.clickIf) {
     // Click only when present — for optional UI (e.g. an AI follow-up step
