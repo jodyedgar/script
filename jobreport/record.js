@@ -271,6 +271,12 @@ async function recordSegment(scenario, segment, token, outFile) {
       console.log(`  [${segment.name}] goto (pre-roll)`);
       await runStep(page, steps.shift());
       await new Promise((r) => setTimeout(r, 500));
+      if (segment.auth && /accounts\.shopify\.com\/|\/challenges\/|\/admin\/auth\/login|\/login\?/.test(page.url())) {
+        // The replayed admin session was rejected (expired, or Shopify's periodic
+        // passkey re-verification). Tag it so callers can ask a human to re-auth
+        // instead of treating it as a broken recording.
+        fail(`ADMIN_SESSION_EXPIRED: admin segment "${segment.name}" landed on ${page.url().slice(0, 90)} — re-run: jobreport.sh auth ${scenario.store}`);
+      }
     }
 
     const cdp = await page.createCDPSession();
