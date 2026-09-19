@@ -124,14 +124,18 @@ class Cursor {
     }
     await this.highlight(box, false);
     await this.ripple();
-    await doClick();
-    // The click may navigate; the overlay is re-created on the next ensure().
+    // doClick may report that the click navigated (record.js clickAndSettle):
+    // then the new page has already been waited for and the post-navigation
+    // rest replaces the post-click rest. The overlay is re-created by ensure().
+    const settledMs = await doClick();
+    if (settledMs) return this.afterNavigation(settledMs);
     await sleep(nextIsPause ? Math.min(this.p.dwellAfterMs, 300) : this.p.dwellAfterMs);
   }
 
-  async afterNavigation() {
+  /** Rest after a navigation; time the viewer already spent watching it load counts. */
+  async afterNavigation(alreadyWaitedMs = 0) {
     await this.ensure();
-    await sleep(this.p.afterNavMs);
+    await sleep(Math.max(300, this.p.afterNavMs - alreadyWaitedMs));
   }
 }
 

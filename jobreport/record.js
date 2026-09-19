@@ -72,15 +72,47 @@ function loadCookies(store) {
 // with sunbowl.ca's Montserrat: DOM/CSS fully visible, zero painted text).
 // Waiting for document.fonts.ready and forcing a harmless global style
 // invalidation makes it repaint correctly, in the site's real fonts.
-async function ensureTextPaints(page) {
+async function ensureTextPaints(page, fontsCapMs = 5000) {
   try {
-    await page.evaluate(() => Promise.race([
+    await page.evaluate((cap) => Promise.race([
       document.fonts.ready.then(() => undefined),
-      new Promise((r) => setTimeout(r, 5000)),
-    ]));
+      new Promise((r) => setTimeout(r, cap)),
+    ]), fontsCapMs);
     await page.addStyleTag({content: "* { text-rendering: optimizeLegibility !important; }"});
     await new Promise((r) => setTimeout(r, 300));
   } catch { /* non-fatal — worst case the page records as-is */ }
+}
+
+// Themes ship `html { scroll-behavior: smooth }`, which turns every per-frame
+// scrollTo() of smoothScroll into a competing browser animation (the page
+// visibly bounced between two positions on hillsdrygoods.com), and Chrome's
+// scroll anchoring re-adjusts the position as lazy images load above the
+// viewport. Both are switched off for the recording; our own easing is the
+// only scroll driver. Re-applied after every navigation.
+async function stabilizeScrolling(page) {
+  try {
+    await page.addStyleTag({content: "html, body, * { scroll-behavior: auto !important; overflow-anchor: none !important; }"});
+  } catch { /* mid-navigation — the next call covers it */ }
+}
+
+// Click, then find out whether it navigated. A link click is not a goto: the
+// old code moved straight on and a scroll could start on a page that was
+// still laying out. Unlike a goto (which settles BEFORE recording starts)
+// this settling is on camera, so the caps are short and the time spent is
+// returned so the cursor's post-navigation rest can be shortened by it.
+// Returns the ms spent settling when the page navigated, else 0.
+async function clickAndSettle(page, doClick) {
+  const nav = page.waitForNavigation({waitUntil: "domcontentloaded", timeout: 10000}).then(() => true).catch(() => false);
+  const t0 = Date.now();
+  await doClick();
+  const navigated = await Promise.race([nav, new Promise((r) => setTimeout(() => r(false), 1500))]);
+  if (!navigated) return 0;
+  // Load event, not network idle (Shopify storefronts never go idle — analytics
+  // pixels), with a short cap: the viewer is watching the page load either way.
+  await page.waitForFunction(() => document.readyState === "complete", {timeout: 3000}).catch(() => {});
+  await ensureTextPaints(page, 1500);
+  await stabilizeScrolling(page);
+  return Math.max(1, Date.now() - t0);
 }
 
 // "text=Collections" (Playwright-style, which the QA agent tends to emit) is not
@@ -164,7 +196,12 @@ async function resolveIntent(page, intent, {fallback, timeout = 15000} = {}) {
 
 async function runStep(page, step, ctx = {}) {
   const cursor = ctx.cursor;
-  const beat = (handle, doClick) => (cursor ? cursor.clickBeat(handle, doClick, {nextIsPause: ctx.nextIsPause}) : doClick());
+  // Every click goes through clickAndSettle so a navigating click waits for
+  // the new page (and the cursor beat rests after it) before the next step.
+  const beat = (handle, doClick) => {
+    const settled = () => clickAndSettle(page, doClick);
+    return cursor ? cursor.clickBeat(handle, settled, {nextIsPause: ctx.nextIsPause}) : settled();
+  };
   if (step.goto) {
     try {
       await page.goto(step.goto, {waitUntil: step.waitUntil || "networkidle2", timeout: NAV_TIMEOUT_MS});
@@ -174,6 +211,7 @@ async function runStep(page, step, ctx = {}) {
       } else throw err;
     }
     await ensureTextPaints(page);
+    await stabilizeScrolling(page);
     if (cursor && !ctx.preroll) await cursor.afterNavigation();
     return;
   }
@@ -182,6 +220,11 @@ async function runStep(page, step, ctx = {}) {
   }
   if (step.smoothScroll) {
     const {to = "bottom", duration = 8} = step.smoothScroll;
+    await stabilizeScrolling(page);
+    // (Tried and removed: forcing the lazy images in the scroll range to load
+    // first. It queued hundreds of decodes, starved the renderer and turned a
+    // 4s scroll into 25s. With scroll anchoring off, images popping in no
+    // longer move the page, which was the actual complaint.)
     return page.evaluate(async (to, durMs) => {
       // Some themes lock html/body (overflow:hidden, 100dvh) and scroll an inner
       // wrapper instead (e.g. Horizon's .page-wrapper on desktop). window.scrollTo
@@ -196,7 +239,7 @@ async function runStep(page, step, ctx = {}) {
         }
       }
       const pos = () => (box ? box.scrollTop : scrollY);
-      const setPos = (y) => { if (box) box.scrollTop = y; else scrollTo(0, y); };
+      const setPos = (y) => { if (box) box.scrollTop = y; else scrollTo({top: y, left: 0, behavior: "instant"}); };
       const maxScroll = box ? box.scrollHeight - box.clientHeight : docEl.scrollHeight - innerHeight;
       let target;
       if (to === "bottom") {
@@ -211,14 +254,17 @@ async function runStep(page, step, ctx = {}) {
       target = Math.max(0, Math.min(target, maxScroll));
       const from = pos();
       const start = performance.now();
+      // Timer-driven, not requestAnimationFrame: a busy renderer (image
+      // decodes, third-party scripts) can starve rAF in a cloud browser and
+      // stall the scroll for seconds; a 16ms timer keeps the easing on the clock.
       await new Promise((resolve) => {
-        (function frame(now) {
-          const t = Math.min((now - start) / durMs, 1);
+        (function frame() {
+          const t = Math.min((performance.now() - start) / durMs, 1);
           // ease-in-out
           const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
           setPos(from + (target - from) * e);
-          t < 1 ? requestAnimationFrame(frame) : resolve();
-        })(performance.now());
+          t < 1 ? setTimeout(frame, 16) : resolve();
+        })();
       });
     }, to, duration * 1000);
   }
@@ -345,12 +391,15 @@ async function recordSegment(scenario, segment, token, outFile) {
     }
 
     if (cursor) await cursor.ensure(); // visible from the first recorded frame
+    const recStart = Date.now();
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const next = steps[i + 1];
-      console.log(`  [${segment.name}] ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
+      const at = ((Date.now() - recStart) / 1000).toFixed(1);
+      console.log(`  [${segment.name}] +${at}s ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
       await runStep(page, step, {cursor, nextIsPause: !!(next && next.pause != null)});
     }
+    console.log(`  [${segment.name}] +${((Date.now() - recStart) / 1000).toFixed(1)}s end`);
     // Small tail so the last motion isn't clipped by the encoder.
     await new Promise((r) => setTimeout(r, 1000));
 
