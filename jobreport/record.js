@@ -100,19 +100,21 @@ async function stabilizeScrolling(page) {
 // still laying out. Unlike a goto (which settles BEFORE recording starts)
 // this settling is on camera, so the caps are short and the time spent is
 // returned so the cursor's post-navigation rest can be shortened by it.
-// Returns the ms spent settling when the page navigated, else 0.
+// Returns {navigated, waitedMs}: the ms spent after the click either way, so
+// the cursor beat can count it against its rest (a click that merely opens
+// a menu must not pay the navigation probe AND the full rest).
 async function clickAndSettle(page, doClick) {
   const nav = page.waitForNavigation({waitUntil: "domcontentloaded", timeout: 10000}).then(() => true).catch(() => false);
   const t0 = Date.now();
   await doClick();
-  const navigated = await Promise.race([nav, new Promise((r) => setTimeout(() => r(false), 1500))]);
-  if (!navigated) return 0;
+  const navigated = await Promise.race([nav, new Promise((r) => setTimeout(() => r(false), 1200))]);
+  if (!navigated) return {navigated: false, waitedMs: Date.now() - t0};
   // Load event, not network idle (Shopify storefronts never go idle — analytics
   // pixels), with a short cap: the viewer is watching the page load either way.
   await page.waitForFunction(() => document.readyState === "complete", {timeout: 3000}).catch(() => {});
   await ensureTextPaints(page, 1500);
   await stabilizeScrolling(page);
-  return Math.max(1, Date.now() - t0);
+  return {navigated: true, waitedMs: Date.now() - t0};
 }
 
 // "text=Collections" (Playwright-style, which the QA agent tends to emit) is not
@@ -200,7 +202,7 @@ async function runStep(page, step, ctx = {}) {
   // the new page (and the cursor beat rests after it) before the next step.
   const beat = (handle, doClick) => {
     const settled = () => clickAndSettle(page, doClick);
-    return cursor ? cursor.clickBeat(handle, settled, {nextIsPause: ctx.nextIsPause}) : settled();
+    return cursor ? cursor.clickBeat(handle, settled, {nextIsPause: ctx.nextIsPause}) : settled().then(() => undefined);
   };
   if (step.goto) {
     try {
