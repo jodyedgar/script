@@ -45,6 +45,9 @@
 #                                required with --job-report.
 #   --qa-notes TEXT              What you verified, in PLAIN CLIENT language — this text
 #                                feeds the client-facing voiceover. Falls back to --summary.
+#   --timeline FILE              timeline.json written by jobreport record.js next to the
+#                                video (auto-detected when --video is a local file). Lets the
+#                                voiceover follow the footage segment by segment.
 #   --job-report-status          Show the ticket's job report (transcript, video, status).
 #
 # Examples:
@@ -326,6 +329,20 @@ submit_job_report() {
         GIF_URL="$MEDIA_URL"; GIF_GS_PATH="$MEDIA_GS_PATH"
     fi
 
+    # ---- Timeline (record.js timeline.json): explicit, else beside the video ----
+    if [ -z "$JR_TIMELINE" ] && [ -f "$JR_VIDEO" ] && [ -f "$(dirname "$JR_VIDEO")/timeline.json" ]; then
+        JR_TIMELINE="$(dirname "$JR_VIDEO")/timeline.json"
+    fi
+    local TIMELINE_JSON='{"nullValue":null}'
+    if [ -n "$JR_TIMELINE" ]; then
+        if [ ! -f "$JR_TIMELINE" ] || ! jq -e '.segments' "$JR_TIMELINE" > /dev/null 2>&1; then
+            echo -e "${RED}Error: --timeline must be a timeline.json from record.js (has .segments).${NC}"
+            return 1
+        fi
+        TIMELINE_JSON="{\"stringValue\":$(jq -c . "$JR_TIMELINE" | jq -Rs .)}"
+        echo -e "${GREEN}Timeline attached: $(jq '.segments | length' "$JR_TIMELINE") segment(s), $(jq '.durationSec' "$JR_TIMELINE")s${NC}"
+    fi
+
     # ---- Attempt: increment past any previous QA round ----
     local TICKET_DOC=$(get_document "$DOC_PATH")
     local PREV_ATTEMPT=$(echo "$TICKET_DOC" | jq -r '.fields.agentQa.mapValue.fields.attempt.integerValue // "0"')
@@ -360,6 +377,7 @@ submit_job_report() {
                 \"gifStoragePath\":$GIF_PATH_JSON,
                 \"videoUrl\":$VIDEO_URL_JSON,
                 \"videoStoragePath\":$VIDEO_PATH_JSON,
+                \"videoTimelineJson\":$TIMELINE_JSON,
                 \"notes\":{\"stringValue\":$NOTES_ESCAPED},
                 \"runId\":{\"nullValue\":null},
                 \"attempt\":{\"integerValue\":\"$ATTEMPT\"},
@@ -759,6 +777,7 @@ QA_AFTER_FILE=""
 JOB_REPORT=false
 JR_GIF=""
 JR_VIDEO=""
+JR_TIMELINE=""
 JR_NOTES=""
 JR_STATUS_ONLY=false
 PULL_ATTACHMENTS=false
@@ -780,6 +799,7 @@ while [[ $# -gt 0 ]]; do
         --job-report) JOB_REPORT=true; FETCH_ONLY=false; shift ;;
         --gif) JR_GIF="$2"; shift 2 ;;
         --video) JR_VIDEO="$2"; shift 2 ;;
+        --timeline) JR_TIMELINE="$2"; shift 2 ;;
         --qa-notes) JR_NOTES="$2"; shift 2 ;;
         --job-report-status) JR_STATUS_ONLY=true; FETCH_ONLY=false; shift ;;
         --pull-attachments) PULL_ATTACHMENTS=true; FETCH_ONLY=false; shift ;;

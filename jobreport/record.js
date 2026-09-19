@@ -42,6 +42,11 @@
 // it off; "pacing": {"moveMs": 900, "dwellBeforeMs": 600, "dwellAfterMs": 1200,
 // "afterNavMs": 1500, "typeDelayMs": 60, "highlight": true} overrides defaults.
 // A segment may carry its own "pacing".
+//
+// Output: walkthrough.mp4, thumb.gif, and timeline.json — every segment's
+// start/end in the final video plus a marker per meaningful step (what was
+// clicked/typed/scrolled and when). The job-report pipeline lays the
+// voiceover on this timeline so the narration follows the footage.
 const fs = require("fs");
 const path = require("path");
 const {execFileSync} = require("child_process");
@@ -323,6 +328,22 @@ async function runStep(page, step, ctx = {}) {
   throw new Error(`unknown step: ${JSON.stringify(step)}`);
 }
 
+// One-line, client-readable description of a step for timeline.json.
+function describeStep(step) {
+  if (step.clickIntent) return `click ${step.clickIntent}`;
+  if (step.typeIntent) return `type "${step.text ?? ""}" into ${step.typeIntent}`;
+  if (step.click) return `click ${step.click}`;
+  if (step.clickLabel) return `click the "${step.clickLabel}" control`;
+  if (step.clickIf) return `click ${step.clickIf} if present`;
+  if (step.type) return `type "${step.type.text ?? ""}" into ${step.type.selector}`;
+  if (step.smoothScroll) {
+    const to = step.smoothScroll.to ?? "bottom";
+    return `scroll ${to === "bottom" ? "to the bottom" : typeof to === "number" ? `down ${to}px` : `to ${to}`}`;
+  }
+  if (step.goto) { try { return `open ${new URL(step.goto).pathname}`; } catch { return "open page"; } }
+  return null; // pause / waitFor / hide / evaluate are not narration beats
+}
+
 async function recordSegment(scenario, segment, token, outFile) {
   const browser = await puppeteer.connect({browserWSEndpoint: browserlessWsUrl(token)});
   try {
@@ -394,16 +415,20 @@ async function recordSegment(scenario, segment, token, outFile) {
 
     if (cursor) await cursor.ensure(); // visible from the first recorded frame
     const recStart = Date.now();
+    const markers = [];
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const next = steps[i + 1];
-      const at = ((Date.now() - recStart) / 1000).toFixed(1);
-      console.log(`  [${segment.name}] +${at}s ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
+      const atSec = (Date.now() - recStart) / 1000;
+      console.log(`  [${segment.name}] +${atSec.toFixed(1)}s ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
+      const label = describeStep(step);
+      if (label) markers.push({at: Number(atSec.toFixed(2)), label});
       await runStep(page, step, {cursor, nextIsPause: !!(next && next.pause != null)});
     }
     console.log(`  [${segment.name}] +${((Date.now() - recStart) / 1000).toFixed(1)}s end`);
     // Small tail so the last motion isn't clipped by the encoder.
     await new Promise((r) => setTimeout(r, 1000));
+    const recordedSec = (Date.now() - recStart) / 1000;
 
     const resp = await cdp.send("Browserless.stopRecording", {encoding: "base64"});
     if (!resp || !resp.value) {
@@ -411,9 +436,18 @@ async function recordSegment(scenario, segment, token, outFile) {
     }
     fs.writeFileSync(outFile, Buffer.from(resp.value, "base64"));
     console.log(`  [${segment.name}] saved ${outFile} (${fs.statSync(outFile).size} bytes)`);
+    return {recordedSec, markers, viewport: vp};
   } finally {
     await browser.close().catch(() => {});
   }
+}
+
+function probeSec(file) {
+  try {
+    const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], {encoding: "utf8"});
+    const n = parseFloat(out);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch { return null; }
 }
 
 function ffmpeg(args) {
@@ -434,12 +468,14 @@ async function main() {
   const token = getBrowserlessToken();
 
   const segFiles = [];
+  const segInfo = [];
   for (let i = 0; i < scenario.segments.length; i++) {
     const segment = scenario.segments[i];
     const file = path.join(outDir, `seg-${String(i).padStart(2, "0")}-${segment.name || "segment"}.webm`);
     console.log(`Recording segment ${i + 1}/${scenario.segments.length}: ${segment.name || "(unnamed)"}`);
-    await recordSegment(scenario, segment, token, file);
+    const info = await recordSegment(scenario, segment, token, file);
     segFiles.push(file);
+    segInfo.push({name: segment.name || `segment-${i + 1}`, auth: !!segment.auth, ...info});
   }
 
   // Concat + normalize to a browser-friendly MP4 (30fps h264 yuv420p faststart).
@@ -464,7 +500,32 @@ async function main() {
     "-vf", "fps=10,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
     "-loop", "0", thumbPath]);
 
-  console.log(JSON.stringify({video: videoPath, thumbnail: thumbPath, segments: segFiles}));
+  // timeline.json — segment offsets in the FINAL video. Per-segment length is
+  // the recorder's own clock (what actually ran between start/stopRecording);
+  // if ffprobe can read the concatenated MP4, the lengths are scaled onto it
+  // so the offsets line up with the frames the viewer sees.
+  const timerTotal = segInfo.reduce((s, x) => s + x.recordedSec, 0);
+  const probed = probeSec(videoPath);
+  const scale = probed && timerTotal > 0 ? probed / timerTotal : 1;
+  let cursorSec = 0;
+  const segments = segInfo.map((x) => {
+    const start = Number(cursorSec.toFixed(2));
+    const length = x.recordedSec * scale;
+    cursorSec += length;
+    return {
+      name: x.name,
+      auth: x.auth,
+      viewport: x.viewport,
+      start,
+      end: Number(cursorSec.toFixed(2)),
+      steps: x.markers.map((m) => ({at: Number((start + m.at * scale).toFixed(2)), label: m.label})),
+    };
+  });
+  const timeline = {version: 1, durationSec: Number((probed || timerTotal).toFixed(2)), segments};
+  const timelinePath = path.join(outDir, "timeline.json");
+  fs.writeFileSync(timelinePath, JSON.stringify(timeline, null, 2));
+
+  console.log(JSON.stringify({video: videoPath, thumbnail: thumbPath, timeline: timelinePath, segments: segFiles}));
 }
 
 main().catch((err) => fail(err.stack || err.message));
