@@ -2,7 +2,31 @@
   "store": "mystore",
   "viewport": {"width": 1440, "height": 900},
   "thumbnail": {"start": 0, "duration": 8},
+  "pacing": {"moveMs": 900, "dwellBeforeMs": 600, "dwellAfterMs": 1200, "afterNavMs": 1500, "typeDelayMs": 60, "highlight": true},
   "segments": [
+    {
+      "name": "storefront",
+      "steps": [
+        {"goto": "https://mystore.com/collections/all"},
+        {"hide": ".cookie-banner, #shopify-pc__banner"},
+        {"pause": 1},
+        {"clickIntent": "the search button in the header"},
+        {"typeIntent": "the search input field", "text": "wax", "fallback": "input[type=search]"},
+        {"pause": 2},
+        {"smoothScroll": {"to": "bottom", "duration": 12}},
+        {"pause": 2}
+      ]
+    },
+    {
+      "name": "storefront-mobile",
+      "viewport": {"width": 390, "height": 844},
+      "steps": [
+        {"goto": "https://mystore.com/"},
+        {"pause": 1},
+        {"clickIntent": "the hamburger menu button that opens the navigation", "fallback": "summary.header__icon--menu"},
+        {"pause": 2}
+      ]
+    },
     {
       "name": "admin",
       "auth": true,
@@ -10,16 +34,6 @@
         {"goto": "https://admin.shopify.com/store/mystore/themes"},
         {"pause": 3},
         {"smoothScroll": {"to": 500, "duration": 4}},
-        {"pause": 2}
-      ]
-    },
-    {
-      "name": "storefront",
-      "steps": [
-        {"goto": "https://mystore.com/collections/all"},
-        {"hide": ".cookie-banner, #shopify-pc__banner"},
-        {"pause": 2},
-        {"smoothScroll": {"to": "bottom", "duration": 12}},
         {"pause": 2}
       ]
     }

@@ -30,12 +30,25 @@
 //   ]
 // }
 //
-// Steps: goto | pause | smoothScroll | click | clickIf | clickLabel | waitFor | hide | type
+// Steps: goto | pause | smoothScroll | click | clickIf | clickLabel | waitFor | hide | type | evaluate (JS string, Promise awaited)
+//        clickIntent | typeIntent — plain-language targets resolved on the LIVE page by Jev
+//        (finder.js): {"clickIntent": "the hamburger menu button in the header", "fallback": "summary.header__icon--menu"}
+//        {"typeIntent": "the search box", "text": "wax", "fallback": "input[type=search]"}
+//
+// Pacing (cursor.js): every click glides a drawn cursor to the target, rests
+// on it with a highlight ring, clicks with a ripple, rests again; navigations
+// rest before the next step. The video is meant to TEACH, so a viewer must be
+// able to follow where each click goes. Scenario-level "pacing": false turns
+// it off; "pacing": {"moveMs": 900, "dwellBeforeMs": 600, "dwellAfterMs": 1200,
+// "afterNavMs": 1500, "typeDelayMs": 60, "highlight": true} overrides defaults.
+// A segment may carry its own "pacing".
 const fs = require("fs");
 const path = require("path");
 const {execFileSync} = require("child_process");
 const puppeteer = require("puppeteer-core");
 const {getBrowserlessToken, browserlessWsUrl, cookieFile} = require("./lib");
+const {findByIntent} = require("./finder");
+const {Cursor, resolvePacing} = require("./cursor");
 
 const NAV_TIMEOUT_MS = 45000;
 
@@ -109,30 +122,49 @@ async function findInFrames(page, sel, {visible = false, timeout = 15000} = {}) 
 // theme-editor switches/checkboxes. Fires a DOM click on the associated control
 // (no coordinates: text matches can resolve to large ancestors whose centre is
 // somewhere else on the page entirely, e.g. inside the preview iframe).
-async function clickLabel(page, text, timeout = 15000) {
+async function findLabelControl(page, text, timeout = 15000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     for (const f of page.frames()) {
-      let done = false;
+      let h = null;
       try {
-        done = await f.evaluate((t) => {
+        h = await f.evaluateHandle((t) => {
           const lab = [...document.querySelectorAll("label")].find((l) => (l.textContent || "").replace(/\s+/g, " ").trim().includes(t));
-          if (!lab) return false;
+          if (!lab) return null;
           const ctrl = lab.control || (lab.getAttribute("for") && document.getElementById(lab.getAttribute("for"))) || lab.querySelector("input, button");
-          const target = ctrl || lab;
-          target.scrollIntoView({block: "center"});
-          target.click();
-          return true;
+          return ctrl || lab;
         }, text);
       } catch { continue; }
-      if (done) return;
+      const el = h && h.asElement();
+      if (el) return el;
     }
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error(`clickLabel: no <label> containing "${text}" in any frame (${timeout}ms)`);
 }
 
-async function runStep(page, step) {
+// Resolve an intent step: Jev on the live page (polled while the page may
+// still be settling), then the author's CSS fallback, then a clear failure
+// naming what Jev could see.
+async function resolveIntent(page, intent, {fallback, timeout = 15000} = {}) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await findByIntent(page, intent);
+    if (last.handle) return last.handle;
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (fallback) {
+    console.warn(`  [find] falling back to selector ${fallback}`);
+    return findInFrames(page, normalizeSelector(fallback), {visible: true, timeout: 5000});
+  }
+  const seen = (last && last.top || []).map((c) => `${c.tag} ${JSON.stringify(c.text || c.label || c.domId || "")} p=${c.p}`).join("; ");
+  throw new Error(`clickIntent: nothing on the page matches "${intent}" (exists=${last ? last.exists.toFixed(2) : "?"}; closest: ${seen || "none"}) — page: ${page.url().slice(0, 100)}`);
+}
+
+async function runStep(page, step, ctx = {}) {
+  const cursor = ctx.cursor;
+  const beat = (handle, doClick) => (cursor ? cursor.clickBeat(handle, doClick, {nextIsPause: ctx.nextIsPause}) : doClick());
   if (step.goto) {
     try {
       await page.goto(step.goto, {waitUntil: step.waitUntil || "networkidle2", timeout: NAV_TIMEOUT_MS});
@@ -142,6 +174,7 @@ async function runStep(page, step) {
       } else throw err;
     }
     await ensureTextPaints(page);
+    if (cursor && !ctx.preroll) await cursor.afterNavigation();
     return;
   }
   if (step.pause != null) {
@@ -192,10 +225,16 @@ async function runStep(page, step) {
   if (step.click) {
     const sel = normalizeSelector(step.click);
     const el = await findInFrames(page, sel, {visible: true});
-    return el.click();
+    return beat(el, () => el.click());
+  }
+  if (step.clickIntent) {
+    const el = await resolveIntent(page, step.clickIntent, {fallback: step.fallback, timeout: (step.timeout || 15) * 1000});
+    return beat(el, () => el.click());
   }
   if (step.clickLabel) {
-    return clickLabel(page, step.clickLabel);
+    const el = await findLabelControl(page, step.clickLabel);
+    // DOM click, not coordinates: label controls can be visually hidden switches.
+    return beat(el, () => el.evaluate((e) => e.click()));
   }
   if (step.clickIf) {
     // Click only when present — for optional UI (e.g. an AI follow-up step
@@ -203,12 +242,19 @@ async function runStep(page, step) {
     const el = await page.$(step.clickIf);
     if (el) {
       const visible = await el.isIntersectingViewport().catch(() => true);
-      if (visible) await el.click().catch(() => {});
+      if (visible) await beat(el, () => el.click().catch(() => {}));
     }
     return;
   }
   if (step.waitFor) {
     return findInFrames(page, normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
+  }
+  if (step.evaluate) {
+    // Run page JS (string expression; a returned Promise is awaited). Use for
+    // storefront APIs a click cannot reach, e.g. window.privacyBanner.showBanner()
+    // when the Shopify consent banner is region-gated and the recorder's egress
+    // IP is outside the banner regions.
+    return page.evaluate(step.evaluate);
   }
   if (step.hide) {
     return page.evaluate((sel) => {
@@ -216,9 +262,15 @@ async function runStep(page, step) {
     }, step.hide);
   }
   if (step.type) {
-    const {selector, text, delay = 40} = step.type;
+    const {selector, text, delay} = step.type;
     const el = await findInFrames(page, normalizeSelector(selector), {visible: true});
-    return el.type(text, {delay});
+    await beat(el, () => el.click());
+    return el.type(text, {delay: delay ?? (cursor ? cursor.p.typeDelayMs : 40)});
+  }
+  if (step.typeIntent) {
+    const el = await resolveIntent(page, step.typeIntent, {fallback: step.fallback, timeout: (step.timeout || 15) * 1000});
+    await beat(el, () => el.click());
+    return el.type(String(step.text ?? ""), {delay: step.delay ?? (cursor ? cursor.p.typeDelayMs : 40)});
   }
   throw new Error(`unknown step: ${JSON.stringify(step)}`);
 }
@@ -236,8 +288,11 @@ async function recordSegment(scenario, segment, token, outFile) {
     if (segment.auth) {
       if (!scenario.store) fail(`segment "${segment.name}" has auth:true but scenario has no "store"`);
       const cookies = loadCookies(scenario.store);
-      // puppeteer accepts CDP-shaped cookies; sameSite "unspecified" must be dropped
-      await page.setCookie(...cookies.map(({sameSite, ...c}) =>
+      // puppeteer accepts CDP-shaped cookies; sameSite "unspecified" must be
+      // dropped, and so must partitionKey (CHIPS cookies exported by a newer
+      // local Chrome) — Browserless's Chrome rejects it on Network.deleteCookies
+      // with "partitionKey.topLevelSite mandatory field missing".
+      await page.setCookie(...cookies.map(({sameSite, partitionKey, partitionKeyOpaque, ...c}) =>
         sameSite && sameSite !== "unspecified" ? {sameSite, ...c} : c));
     }
 
@@ -264,12 +319,16 @@ async function recordSegment(scenario, segment, token, outFile) {
       }
     }
 
+    // Pacing + drawn cursor (cursor.js). Segment overrides scenario.
+    const pacing = resolvePacing(segment.pacing !== undefined ? segment.pacing : scenario.pacing);
+    const cursor = pacing.enabled ? new Cursor(page, pacing) : null;
+
     // Run the segment's leading goto BEFORE recording starts so the video
     // opens on a painted page instead of white nothing.
     const steps = [...segment.steps];
     if (steps[0] && steps[0].goto) {
       console.log(`  [${segment.name}] goto (pre-roll)`);
-      await runStep(page, steps.shift());
+      await runStep(page, steps.shift(), {cursor, preroll: true});
       await new Promise((r) => setTimeout(r, 500));
       if (segment.auth && /accounts\.shopify\.com\/|\/challenges\/|\/admin\/auth\/login|\/login\?/.test(page.url())) {
         // The replayed admin session was rejected (expired, or Shopify's periodic
@@ -285,9 +344,12 @@ async function recordSegment(scenario, segment, token, outFile) {
       fail(`Browserless says: "${started.error}" — session recording needs a paid plan (Prototyping or up)`);
     }
 
-    for (const step of steps) {
-      console.log(`  [${segment.name}] ${Object.keys(step)[0]}`);
-      await runStep(page, step);
+    if (cursor) await cursor.ensure(); // visible from the first recorded frame
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      const next = steps[i + 1];
+      console.log(`  [${segment.name}] ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
+      await runStep(page, step, {cursor, nextIsPause: !!(next && next.pause != null)});
     }
     // Small tail so the last motion isn't clipped by the encoder.
     await new Promise((r) => setTimeout(r, 1000));
