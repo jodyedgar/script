@@ -117,6 +117,10 @@ class Cursor {
       await sleep(this.p.enabled ? 500 : 0);
       box = await handle.boundingBox().catch(() => null);
     }
+    // Remembered for record.js: the box after scrollIntoView is where the
+    // viewer saw the element, which is what timeline.json anchors point at.
+    this.lastBox = box && box.width > 2 && box.height > 2 ?
+      {x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height)} : null;
     if (box) {
       await this.moveTo(box.x + box.width / 2, box.y + Math.min(box.height / 2, box.height - 4));
       await this.highlight(box, true);
@@ -130,9 +134,13 @@ class Cursor {
     // The overlay is re-created by ensure() after a navigation.
     const r = await doClick();
     const waited = (r && r.waitedMs) || 0;
-    if (r && r.navigated) return this.afterNavigation(waited);
+    if (r && r.navigated) {
+      await this.afterNavigation(waited);
+      return r;
+    }
     const rest = nextIsPause ? Math.min(this.p.dwellAfterMs, 300) : this.p.dwellAfterMs;
     await sleep(Math.max(0, rest - waited));
+    return r;
   }
 
   /** Rest after a navigation; time the viewer already spent watching it load counts. */

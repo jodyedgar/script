@@ -43,7 +43,7 @@
 // "afterNavMs": 1500, "typeDelayMs": 60, "highlight": true} overrides defaults.
 // A segment may carry its own "pacing".
 //
-// Output: walkthrough.mp4, thumb.gif, and timeline.json — every segment's
+// Output: walkthrough.mp4, thumb.gif, and timeline.json (v2) — every segment's
 // start/end in the final video plus a marker per meaningful step (what was
 // clicked/typed/scrolled and when). The job-report pipeline lays the
 // voiceover on this timeline so the narration follows the footage.
@@ -108,6 +108,15 @@ async function stabilizeScrolling(page) {
 // Returns {navigated, waitedMs}: the ms spent after the click either way, so
 // the cursor beat can count it against its rest (a click that merely opens
 // a menu must not pay the navigation probe AND the full rest).
+// Viewport-space box of an element handle, rounded, or null. Off-screen or
+// zero-size boxes are null too: nothing to point at.
+async function boxOf(handle) {
+  if (!handle || !handle.boundingBox) return null;
+  const b = await handle.boundingBox().catch(() => null);
+  if (!b || !(b.width > 2) || !(b.height > 2)) return null;
+  return {x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height)};
+}
+
 async function clickAndSettle(page, doClick) {
   const nav = page.waitForNavigation({waitUntil: "domcontentloaded", timeout: 10000}).then(() => true).catch(() => false);
   const t0 = Date.now();
@@ -205,11 +214,25 @@ async function runStep(page, step, ctx = {}) {
   const cursor = ctx.cursor;
   // Every click goes through clickAndSettle so a navigating click waits for
   // the new page (and the cursor beat rests after it) before the next step.
-  const beat = (handle, doClick) => {
+  // Every click/type/waitFor step reports where its element was on screen
+  // (ctx.anchor, viewport CSS px) so timeline.json can tell the job-report
+  // mux what to point Bucky at; a navigation or scroll reports null because
+  // the last box no longer means anything.
+  const beat = async (handle, doClick) => {
     const settled = () => clickAndSettle(page, doClick);
-    return cursor ? cursor.clickBeat(handle, settled, {nextIsPause: ctx.nextIsPause}) : settled().then(() => undefined);
+    let box = null;
+    let r;
+    if (cursor) {
+      r = await cursor.clickBeat(handle, settled, {nextIsPause: ctx.nextIsPause});
+      box = cursor.lastBox || null;
+    } else {
+      box = await boxOf(handle);
+      r = await settled();
+    }
+    ctx.anchor = r && r.navigated ? null : box;
   };
   if (step.goto) {
+    ctx.anchor = null;
     try {
       await page.goto(step.goto, {waitUntil: step.waitUntil || "networkidle2", timeout: NAV_TIMEOUT_MS});
     } catch (err) {
@@ -226,6 +249,7 @@ async function runStep(page, step, ctx = {}) {
     return new Promise((r) => setTimeout(r, step.pause * 1000));
   }
   if (step.smoothScroll) {
+    ctx.anchor = null;
     const {to = "bottom", duration = 8} = step.smoothScroll;
     await stabilizeScrolling(page);
     // (Tried and removed: forcing the lazy images in the scroll range to load
@@ -300,7 +324,11 @@ async function runStep(page, step, ctx = {}) {
     return;
   }
   if (step.waitFor) {
-    return findInFrames(page, normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
+    // The awaited element IS the feature the narration is about (e.g. the
+    // upsell box after "Add to cart"), so it anchors Bucky too.
+    const el = await findInFrames(page, normalizeSelector(step.waitFor), {timeout: (step.timeout || 15) * 1000});
+    ctx.anchor = await boxOf(el);
+    return el;
   }
   if (step.evaluate) {
     // Run page JS (string expression; a returned Promise is awaited). Use for
@@ -416,6 +444,11 @@ async function recordSegment(scenario, segment, token, outFile) {
     if (cursor) await cursor.ensure(); // visible from the first recorded frame
     const recStart = Date.now();
     const markers = [];
+    // anchors: what is on screen from a given second — the box (viewport CSS
+    // px) of the element a step clicked / typed into / waited for, or null
+    // after a scroll or navigation. The job-report mux points Bucky at the
+    // latest anchor when the narration goes quiet (timeline.ts, media.ts).
+    const anchors = [];
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const next = steps[i + 1];
@@ -423,7 +456,15 @@ async function recordSegment(scenario, segment, token, outFile) {
       console.log(`  [${segment.name}] +${atSec.toFixed(1)}s ${Object.keys(step)[0]}${step.clickIntent || step.typeIntent ? ` "${step.clickIntent || step.typeIntent}"` : ""}`);
       const label = describeStep(step);
       if (label) markers.push({at: Number(atSec.toFixed(2)), label});
-      await runStep(page, step, {cursor, nextIsPause: !!(next && next.pause != null)});
+      const ctx = {cursor, nextIsPause: !!(next && next.pause != null)};
+      await runStep(page, step, ctx);
+      if ("anchor" in ctx) {
+        // Stamped at the step's START: a scroll makes the last box meaningless
+        // as soon as the page moves, and a click's box (measured after the
+        // cursor scrolled it into view) is where the viewer sees the element
+        // during the glide and the click.
+        anchors.push({at: Number(atSec.toFixed(2)), box: ctx.anchor});
+      }
     }
     console.log(`  [${segment.name}] +${((Date.now() - recStart) / 1000).toFixed(1)}s end`);
     // Small tail so the last motion isn't clipped by the encoder.
@@ -436,7 +477,7 @@ async function recordSegment(scenario, segment, token, outFile) {
     }
     fs.writeFileSync(outFile, Buffer.from(resp.value, "base64"));
     console.log(`  [${segment.name}] saved ${outFile} (${fs.statSync(outFile).size} bytes)`);
-    return {recordedSec, markers, viewport: vp};
+    return {recordedSec, markers, anchors, viewport: vp};
   } finally {
     await browser.close().catch(() => {});
   }
@@ -519,9 +560,10 @@ async function main() {
       start,
       end: Number(cursorSec.toFixed(2)),
       steps: x.markers.map((m) => ({at: Number((start + m.at * scale).toFixed(2)), label: m.label})),
+      anchors: (x.anchors || []).map((a) => ({at: Number((start + a.at * scale).toFixed(2)), box: a.box})),
     };
   });
-  const timeline = {version: 1, durationSec: Number((probed || timerTotal).toFixed(2)), segments};
+  const timeline = {version: 2, durationSec: Number((probed || timerTotal).toFixed(2)), segments};
   const timelinePath = path.join(outDir, "timeline.json");
   fs.writeFileSync(timelinePath, JSON.stringify(timeline, null, 2));
 
