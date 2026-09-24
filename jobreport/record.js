@@ -139,6 +139,27 @@ function normalizeSelector(sel) {
   return m ? `::-p-text(${m[1].replace(/^["']|["']$/g, "")})` : sel;
 }
 
+// Frames that never hold a recordable target. Shopify's hidden
+// embedded-modal-host iframe (and blank frames) can leave a query unanswered
+// for ~30s; searched in turn, one of them ate a whole 45s waitFor in the
+// theme editor while the target row was already on screen (TICK-4082).
+const SKIP_FRAME_RE = /^(about:blank)?$|\/embedded-modal-host\b/;
+const FRAME_QUERY_MS = 1500;
+const skipFrame = (page, f) => {
+  if (f === page.mainFrame()) return false;
+  try { return SKIP_FRAME_RE.test(f.url()); } catch { return true; } // detached
+};
+
+// Run fn against one frame, but give up after FRAME_QUERY_MS so a frame that
+// never answers can't stall the search of the others.
+function withFrameTimeout(promise) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => { timer = setTimeout(() => resolve(null), FRAME_QUERY_MS); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 // Find a selector in the main frame OR any child frame (Shopify's theme editor
 // renders its whole UI inside an online-store-web iframe that attaches a few
 // seconds after the top document settles). Polls the LIVE frame list until the
@@ -150,19 +171,20 @@ async function findInFrames(page, sel, {visible = false, timeout = 15000} = {}) 
     const frames = page.frames();
     frameCount = frames.length;
     for (const f of frames) {
+      if (skipFrame(page, f)) continue;
       let h = null;
-      try { h = await f.$(sel); } catch { continue; } // detached frame / mid-navigation
+      try { h = await withFrameTimeout(f.$(sel)); } catch { continue; } // detached frame / mid-navigation
       if (!h) continue;
       if (!visible) return h;
-      const ok = await h.evaluate((e) => {
+      const ok = await withFrameTimeout(h.evaluate((e) => {
         const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
         return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none";
-      }).catch(() => false);
+      })).catch(() => false);
       if (ok) return h;
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  const urls = page.frames().map((f) => f.url().slice(0, 80)).join(" | ");
+  const urls = page.frames().map((f) => { try { return f.url().slice(0, 80); } catch { return "(detached)"; } }).join(" | ");
   throw new Error(`Waiting for selector \`${sel}\` failed (${frameCount} frame(s), ${timeout}ms) — frames: ${urls} — page: ${page.url().slice(0, 100)}`);
 }
 
@@ -174,14 +196,15 @@ async function findLabelControl(page, text, timeout = 15000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     for (const f of page.frames()) {
+      if (skipFrame(page, f)) continue;
       let h = null;
       try {
-        h = await f.evaluateHandle((t) => {
+        h = await withFrameTimeout(f.evaluateHandle((t) => {
           const lab = [...document.querySelectorAll("label")].find((l) => (l.textContent || "").replace(/\s+/g, " ").trim().includes(t));
           if (!lab) return null;
           const ctrl = lab.control || (lab.getAttribute("for") && document.getElementById(lab.getAttribute("for"))) || lab.querySelector("input, button");
           return ctrl || lab;
-        }, text);
+        }, text));
       } catch { continue; }
       const el = h && h.asElement();
       if (el) return el;

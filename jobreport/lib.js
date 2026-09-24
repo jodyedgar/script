@@ -27,8 +27,16 @@ function browserlessWsUrl(token, {record = true} = {}) {
   // NO stealth=true: the docs claim recording needs the stealth route, but
   // stealth sessions never paint webfont text (whole pages record with
   // invisible glyphs — verified live). Recording works fine without it.
+  // Site isolation OFF: Shopify's theme editor UI is a cross-origin
+  // online-store-web iframe. As an out-of-process frame, puppeteer's target
+  // for it detaches and re-attaches about once a second over this connection
+  // (the editor itself loads once), so every query hit "Session closed" and no
+  // admin segment could find a sidebar row (TICK-4082, 2026-09-24). In-process,
+  // it is an ordinary child frame and page.frames() works.
+  const launch = {args: ["--disable-features=IsolateOrigins,site-per-process", "--disable-site-isolation-trials"]};
   return `wss://${BROWSERLESS_HOST}/?token=${encodeURIComponent(token)}` +
-    `&headless=false&record=${record ? "true" : "false"}&timeout=${SESSION_TIMEOUT_MS}`;
+    `&headless=false&record=${record ? "true" : "false"}&timeout=${SESSION_TIMEOUT_MS}` +
+    `&launch=${encodeURIComponent(JSON.stringify(launch))}`;
 }
 
 // TypeSafe (Jev) key for the semantic element finder (finder.js). Env first,

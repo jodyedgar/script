@@ -133,8 +133,19 @@ async function findByIntent(page, intent, {apiKey, maxText = 80, log = console.l
   const frames = page.frames();
   const all = [];
   for (let fi = 0; fi < frames.length; fi++) {
+    // Same guard as record.js findInFrames: Shopify's hidden embedded-modal-host
+    // (and blank frames) can leave evaluate() unanswered for ~30s.
+    let furl;
+    try { furl = frames[fi].url(); } catch { continue; } // detached
+    if (frames[fi] !== page.mainFrame() && /^(about:blank)?$|\/embedded-modal-host\b/.test(furl)) continue;
     let list = [];
-    try { list = await frames[fi].evaluate(collectInFrame, ATTR, ACTIONABLE, maxText); } catch { continue; }
+    let timer;
+    try {
+      list = await Promise.race([
+        frames[fi].evaluate(collectInFrame, ATTR, ACTIONABLE, maxText),
+        new Promise((resolve) => { timer = setTimeout(() => resolve([]), 3000); }),
+      ]);
+    } catch { continue; } finally { clearTimeout(timer); }
     for (const c of list) all.push({...c, fi, id: `f${fi}e${c.n}`, domId: c.id});
   }
   if (!all.length) return {handle: null, exists: 0, top: [], ms: Date.now() - started, reason: "no actionable elements"};
