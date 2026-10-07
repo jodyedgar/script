@@ -73,6 +73,7 @@ async function main() {
   }, null, 2), {mode: 0o600});
   console.log(`Saved ${wanted.length} Shopify cookies -> ${out}`);
   await browser.close();
+  pushJarToCody(out);
   // Marker for Bucky's Client Setup audit + bucky-qa: when was an admin session
   // last saved for this store (cookies themselves never leave this machine).
   try {
@@ -88,6 +89,30 @@ async function main() {
     const res = await fetch(doc, {method: "PATCH", headers: {Authorization: `Bearer ${token}`, "Content-Type": "application/json"}, body});
     console.log(res.ok ? `Recorded jobReportAuth.savedAt on shops/${handle}.myshopify.com` : `(marker write skipped: HTTP ${res.status})`);
   } catch (e) { console.log(`(marker write skipped: ${e.message.split("\n")[0]})`); }
+}
+
+// cody-macbook runs Cody's cycle preflight, which live-probes the admin with
+// this jar before the coder starts (Bucky coordination/preflight/CONTRACT.md
+// §3.1, §7). The login needs a passkey + visible Chrome, so it happens here and
+// the jar is copied over Tailscale. Best effort: a failed copy never fails auth.
+// JOBREPORT_CODY_PUSH=0 disables; JOBREPORT_CODY_HOST overrides the target.
+function pushJarToCody(file) {
+  if (process.env.JOBREPORT_CODY_PUSH === "0") return;
+  const {execFileSync} = require("child_process");
+  const path = require("path");
+  const host = process.env.JOBREPORT_CODY_HOST || "jodyedgar@100.67.215.41";
+  const dir = "~/.config/jobreport/cookies";
+  const ssh = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
+  try {
+    execFileSync("ssh", [...ssh, host, `mkdir -p ${dir} && chmod 700 ${dir}`], {stdio: "pipe"});
+    execFileSync("scp", ["-q", "-p", ...ssh, file, `${host}:${dir}/`], {stdio: "pipe"});
+    execFileSync("ssh", [...ssh, host, `chmod 600 ${dir}/${path.basename(file)}`], {stdio: "pipe"});
+    console.log(`Pushed ${path.basename(file)} -> cody (${host}) for preflight`);
+  } catch (e) {
+    const why = String(e.stderr || e.message).trim().split("\n")[0];
+    console.log(`!! Could NOT push ${path.basename(file)} to cody (${host}): ${why}`);
+    console.log(`   Cody's preflight will keep holding this store. Retry: scp -p ${file} ${host}:${dir}/`);
+  }
 }
 
 main().catch((err) => { console.error("auth failed:", err.message); process.exit(1); });
