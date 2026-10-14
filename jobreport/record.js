@@ -316,10 +316,22 @@ async function runStep(page, step, ctx = {}) {
           const t = Math.min((performance.now() - start) / durMs, 1);
           // ease-in-out
           const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+          // "bottom" re-measures every frame: lazy sections grow the page mid-scroll,
+          // and a target fixed at the start stops short of the footer.
+          if (to === "bottom") target = box ? box.scrollHeight - box.clientHeight : docEl.scrollHeight - innerHeight;
           setPos(from + (target - from) * e);
           t < 1 ? setTimeout(frame, 16) : resolve();
         })();
       });
+      // Settle: anything that loaded on the last frames can still push the footer down.
+      if (to === "bottom") {
+        for (let i = 0; i < 10; i++) {
+          await new Promise((r) => setTimeout(r, 150));
+          const end = box ? box.scrollHeight - box.clientHeight : docEl.scrollHeight - innerHeight;
+          if (pos() >= end - 1) break;
+          setPos(end);
+        }
+      }
     }, to, duration * 1000);
   }
   if (step.click) {
