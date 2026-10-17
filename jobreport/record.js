@@ -30,6 +30,8 @@
 //   ]
 // }
 //
+// smoothScroll takes an optional "frame" (hostname substring) to scroll a child frame,
+// e.g. {"smoothScroll": {"to": "#shopify-section-x", "duration": 4, "frame": "myshopify.com"}}.
 // Steps: goto | pause | smoothScroll | click | clickIf | clickLabel | waitFor | hide | type | evaluate (JS string, Promise awaited)
 //        clickIntent | typeIntent — plain-language targets resolved on the LIVE page by Jev
 //        (finder.js): {"clickIntent": "the hamburger menu button in the header", "fallback": "summary.header__icon--menu"}
@@ -273,13 +275,22 @@ async function runStep(page, step, ctx = {}) {
   }
   if (step.smoothScroll) {
     ctx.anchor = null;
-    const {to = "bottom", duration = 8} = step.smoothScroll;
+    const {to = "bottom", duration = 8, frame} = step.smoothScroll;
+    // "frame": a hostname substring picking a child frame to scroll instead of
+    // the top page, e.g. "myshopify.com" for the theme editor's storefront
+    // preview. Hostname only: editor helper frames carry the shop domain in
+    // their query string.
+    let target = page;
+    if (frame) {
+      target = page.frames().find((f) => { try { return new URL(f.url()).hostname.includes(frame); } catch { return false; } });
+      if (!target) throw new Error(`smoothScroll: no frame whose hostname contains "${frame}"`);
+    }
     await stabilizeScrolling(page);
     // (Tried and removed: forcing the lazy images in the scroll range to load
     // first. It queued hundreds of decodes, starved the renderer and turned a
     // 4s scroll into 25s. With scroll anchoring off, images popping in no
     // longer move the page, which was the actual complaint.)
-    return page.evaluate(async (to, durMs) => {
+    return target.evaluate(async (to, durMs) => {
       // Some themes lock html/body (overflow:hidden, 100dvh) and scroll an inner
       // wrapper instead (e.g. Horizon's .page-wrapper on desktop). window.scrollTo
       // is a silent no-op there, so scroll whichever element actually scrolls.
