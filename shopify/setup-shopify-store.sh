@@ -176,3 +176,15 @@ if [[ ! "$SAVE_COOKIES" =~ ^[Nn] ]]; then
 else
     echo "Later: ~/Dropbox/scripts/jobreport.sh auth $STORE_HANDLE"
 fi
+
+# Bucky GitHub Apps: Reader/Builder/Promoter are installed on selected repos
+# only, so the new theme repo must be added to all three or QA approval can't
+# merge and Cody's preflight holds the client's tickets.
+echo ""
+echo -e "${YELLOW}Bucky GitHub Apps: add this store's theme repo to Reader, Builder and Promoter?${NC}"
+read -r -p "Theme repo (owner/name) [sunbowl/shopify-$STORE_HANDLE], or n to skip: " THEME_REPO
+if [[ "$THEME_REPO" =~ ^[Nn]$ ]]; then
+    echo "Later: ~/Dropbox/scripts/shopify/github-apps-add-repo.sh <owner/repo>  (or the Client Setup checklist in Bucky)"
+else
+    bash "$HOME/Dropbox/scripts/shopify/github-apps-add-repo.sh" "${THEME_REPO:-sunbowl/shopify-$STORE_HANDLE}" || echo -e "${YELLOW}Not finished — run later: ~/Dropbox/scripts/shopify/github-apps-add-repo.sh ${THEME_REPO:-sunbowl/shopify-$STORE_HANDLE}${NC}"
+fi
