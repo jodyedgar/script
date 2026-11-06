@@ -12,11 +12,12 @@ SKIP_GIT_HOOKS=false
 #######################################
 # Show help
 #######################################
-show_help() {
+show_usage() {
     show_help "necro-init" \
         "Initialize Necro in the current project" \
         "necro init [options]" \
         "--skip-git-hooks    Don't install git hooks" \
+        "--skip-you-should-know  Don't enable Claude Code's You Should Know side agent" \
         "--help              Show this help message"
 }
 
@@ -235,6 +236,26 @@ install_git_hooks() {
 }
 
 #######################################
+# Enable Claude Code's built-in "You Should Know" side agent.
+# Built-in plugins are user-scoped, so this is global and idempotent.
+#######################################
+enable_you_should_know() {
+    if [[ "$SKIP_YSK" == true ]]; then
+        log_info "Skipped enabling the You Should Know side agent"
+        return 0
+    fi
+    if ! command_exists claude; then
+        log_warning "claude CLI not found; skipping You Should Know"
+        return 0
+    fi
+    if claude plugin enable cc-plugin-you-should-know@builtin >/dev/null 2>&1; then
+        log_success "Claude Code 'You Should Know' side agent enabled (user-wide)"
+    else
+        log_warning "Could not enable You Should Know (needs Claude Code v2.1.287+)"
+    fi
+}
+
+#######################################
 # Main initialization
 #######################################
 main() {
@@ -245,14 +266,18 @@ main() {
                 SKIP_GIT_HOOKS=true
                 shift
                 ;;
+            --skip-you-should-know)
+                SKIP_YSK=true
+                shift
+                ;;
             --help|-h)
-                show_help
+                show_usage
                 exit 0
                 ;;
             *)
                 log_error "Unknown option: $1"
                 echo ""
-                show_help
+                show_usage
                 exit 1
                 ;;
         esac
@@ -283,6 +308,7 @@ main() {
     create_architecture_doc "$project_root"
     update_restart_doc "$project_root"
     install_git_hooks "$project_root"
+    enable_you_should_know
 
     echo ""
     log_success "Necro initialized successfully!"
@@ -292,6 +318,7 @@ main() {
     echo "  2. Review inventory and identify files to deprecate"
     echo -e "  3. Run: ${GREEN}necro deprecate${NC}"
     echo -e "  4. Update architecture: ${GREEN}necro arch${NC}"
+    echo -e "  5. While an agent works, in a second terminal: ${GREEN}necro watch${NC}"
     echo ""
 }
 

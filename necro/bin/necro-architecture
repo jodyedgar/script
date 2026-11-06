@@ -13,7 +13,7 @@ OUTPUT_FILE=""
 #######################################
 # Show help
 #######################################
-show_help() {
+show_usage() {
     show_help "necro-architecture" \
         "Generate/update ARCHITECTURE.md with current project state" \
         "necro arch [options]" \
@@ -341,13 +341,13 @@ main() {
                 shift 2
                 ;;
             --help|-h)
-                show_help
+                show_usage
                 exit 0
                 ;;
             *)
                 log_error "Unknown option: $1"
                 echo ""
-                show_help
+                show_usage
                 exit 1
                 ;;
         esac

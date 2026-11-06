@@ -23,6 +23,7 @@ show_usage() {
     echo "  ${GREEN}deprecate${NC}     Manage file deprecation"
     echo "  ${GREEN}arch${NC}          Generate/update ARCHITECTURE.md"
     echo "  ${GREEN}test${NC}          Run project tests"
+    echo "  ${GREEN}watch${NC}         Second agent that watches changes and flags what you should know"
     echo "  ${GREEN}help${NC}          Show this help message"
     echo "  ${GREEN}version${NC}       Show version information"
     echo ""
@@ -31,6 +32,7 @@ show_usage() {
     echo "  necro inventory               # Scan project for files"
     echo "  necro deprecate old-file.js   # Deprecate a single file"
     echo "  necro arch                    # Update architecture documentation"
+    echo "  necro watch                   # Watch the working agent from a second terminal"
     echo ""
     echo -e "${YELLOW}Get Help:${NC}"
     echo "  necro <command> --help        # Get help for specific command"
@@ -85,6 +87,9 @@ main() {
             ;;
         test)
             "$SCRIPT_DIR/necro-test" "$@"
+            ;;
+        watch)
+            "$SCRIPT_DIR/necro-watch" "$@"
             ;;
         help|--help|-h)
             show_usage

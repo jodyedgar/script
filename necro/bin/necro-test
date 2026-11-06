@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/../lib/common.sh"
 #######################################
 # Show help
 #######################################
-show_help() {
+show_usage() {
     show_help "necro-test" \
         "Run project-specific tests" \
         "necro test [options]" \
@@ -24,13 +24,13 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --help|-h)
-                show_help
+                show_usage
                 exit 0
                 ;;
             *)
                 log_error "Unknown option: $1"
                 echo ""
-                show_help
+                show_usage
                 exit 1
                 ;;
         esac

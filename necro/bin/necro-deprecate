@@ -15,7 +15,7 @@ CLEAN_DAYS=30
 #######################################
 # Show help
 #######################################
-show_help() {
+show_usage() {
     show_help "necro-deprecate" \
         "Manage file deprecation with dated archive structure" \
         "necro deprecate [mode] [options]" \
@@ -338,7 +338,7 @@ main() {
 
     # Handle help
     if [[ "$mode" == "--help" ]] || [[ "$mode" == "-h" ]]; then
-        show_help
+        show_usage
         exit 0
     fi
 
@@ -396,7 +396,7 @@ main() {
                 # Unknown mode
                 log_error "Unknown mode: $mode"
                 echo ""
-                show_help
+                show_usage
                 exit 1
             fi
             ;;

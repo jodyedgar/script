@@ -1,0 +1,402 @@
+#!/bin/bash
+# necro-watch - A second agent that watches the working agent's changes
+# Part of the Necro project archaeology and cleanup system
+#
+# Run it in a second terminal while Claude Code (or anyone) works in the project.
+# Every tick it snapshots the working tree (tracked + untracked, .gitignore respected)
+# into a private index, diffs it against the baseline taken when the watch started,
+# and reports Necro-specific things worth knowing:
+#
+#   rule  - deterministic checks (always on, free):
+#           edits inside deprecated/, new references to deprecated files,
+#           new files matching suspicious patterns, new files that duplicate an
+#           existing file's name, new top-level dirs with ARCHITECTURE.md untouched
+#   ai    - a headless `claude -p` side agent reads ARCHITECTURE.md + the diff and
+#           names up to 3 things the working agent may have missed
+#
+# Notes are appended to .necro/watch/notes.md, which the Necro skill tells the
+# working agent to read. Notes already reported are never repeated.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+INTERVAL=90
+ONCE=false
+SINCE=""
+USE_AI=true
+MODEL="sonnet"
+NOTIFY=false
+MAX_DIFF_BYTES=60000
+
+# Basenames too common to mean "duplicate" or "reference"
+COMMON_STEMS=" index main utils util types type constants config README readme test tests styles style app App mod __init__ package setup helpers helper common shared base layout page route schema models model en default "
+
+show_usage() {
+    show_help "necro watch" "Second agent that watches the working agent's changes" \
+        "necro watch [options]" \
+        "--interval N     Seconds between checks (default: $INTERVAL)" \
+        "--once           Run one check and exit" \
+        "--since REF      Compare against a git ref (e.g. main) instead of a fresh baseline" \
+        "--no-ai          Deterministic rules only, no claude -p side agent" \
+        "--model NAME     Model for the side agent (default: $MODEL)" \
+        "--notify         macOS notification for each new note" \
+        "--reset          Forget baseline and reported notes, then exit" \
+        "--tail [N]       Print the last N notes (default 20) and exit" \
+        "--help           Show this help message"
+    echo "Notes go to .necro/watch/notes.md. The Necro skill reads them before commits."
+    echo ""
+}
+
+#######################################
+# Snapshot the working tree into the private index and print its tree hash
+#######################################
+snapshot_tree() {
+    GIT_INDEX_FILE="$WATCH_INDEX" git add -A -- . >/dev/null 2>&1
+    GIT_INDEX_FILE="$WATCH_INDEX" git write-tree 2>/dev/null
+}
+
+#######################################
+# Note handling
+#######################################
+note_key() {
+    # Normalise: lowercase, strip non-alphanumerics, so rewordings of spacing don't repeat
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9'
+}
+
+emit_note() {
+    local source="$1"
+    local text="$2"
+    local key
+    key="$(note_key "$source$text")"
+    [[ -z "$key" ]] && return 0
+    if grep -qxF "$key" "$KNOWN_FILE" 2>/dev/null; then
+        return 0
+    fi
+    echo "$key" >> "$KNOWN_FILE"
+
+    local stamp
+    stamp="$(date '+%Y-%m-%d %H:%M')"
+    echo "- [$stamp] [$source] $text" >> "$NOTES_FILE"
+    NEW_NOTES=$((NEW_NOTES + 1))
+
+    if [[ "$source" == "rule" ]]; then
+        echo -e "${YELLOW}⚠ by the way:${NC} $text"
+    else
+        echo -e "${CYAN}💡 you should know:${NC} $text"
+    fi
+
+    if [[ "$NOTIFY" == true ]] && command_exists osascript; then
+        local safe="${text//\"/\'}"
+        osascript -e "display notification \"${safe:0:200}\" with title \"Necro watch\"" >/dev/null 2>&1
+    fi
+}
+
+is_common_stem() {
+    [[ "$COMMON_STEMS" == *" $1 "* ]]
+}
+
+stem_of() {
+    local base="${1##*/}"
+    echo "${base%%.*}"
+}
+
+#######################################
+# Deterministic rules
+#######################################
+run_rules() {
+    local base="$1" cur="$2"
+    local status path
+
+    local name_status
+    name_status="$(git diff --no-renames --name-status "$base" "$cur" 2>/dev/null)"
+    [[ -z "$name_status" ]] && return 0
+
+    # Original paths of every deprecated file: deprecated/<date>/<original path>
+    local deprecated_paths=""
+    if [[ -d "$PROJECT_ROOT/deprecated" ]]; then
+        deprecated_paths="$(cd "$PROJECT_ROOT" && find deprecated -mindepth 2 -type f 2>/dev/null \
+            | grep -E '^deprecated/[0-9]{4}-[0-9]{2}-[0-9]{2}/' | cut -d/ -f3-)"
+    fi
+
+    local suspicious
+    suspicious="$(python3 -I -c '
+import json,sys
+try:
+    c=json.load(open(sys.argv[1]))
+    print("\n".join(c.get("inventory_settings",{}).get("suspicious_patterns",[])))
+except Exception:
+    pass
+' "$PROJECT_ROOT/.necro/config.json" 2>/dev/null)"
+
+    local tracked_stems
+    tracked_stems="$(git ls-tree -r --name-only "$base" 2>/dev/null)"
+
+    local arch_touched=false
+    echo "$name_status" | grep -qE $'^[AM]\tARCHITECTURE.md$' && arch_touched=true
+
+    while IFS=$'\t' read -r status path; do
+        [[ -z "$path" ]] && continue
+        case "$path" in .necro/*|PROJECT_INVENTORY_*) continue ;; esac
+
+        # 1. Editing a file that lives in deprecated/
+        if [[ "$path" == deprecated/* && "$path" != "deprecated/DEPRECATION_LOG.md" && "$status" == "M" ]]; then
+            emit_note rule "$path was edited, but it is in deprecated/. Zombie code should not be changed. Fix the active replacement instead."
+        fi
+
+        [[ "$status" != "A" ]] && continue
+        [[ "$path" == deprecated/* ]] && continue
+
+        local base_name="${path##*/}"
+        local stem
+        stem="$(stem_of "$path")"
+
+        # 2. New file matching a suspicious pattern
+        if [[ -n "$suspicious" ]]; then
+            while IFS= read -r pat; do
+                [[ -z "$pat" ]] && continue
+                # shellcheck disable=SC2053
+                if [[ "$base_name" == $pat ]]; then
+                    emit_note rule "New file $path matches the suspicious pattern '$pat'. Is it a backup or copy that will become a zombie?"
+                    break
+                fi
+            done <<< "$suspicious"
+        fi
+
+        # 3. New file that resurrects a deprecated one
+        if [[ -n "$deprecated_paths" ]] && echo "$deprecated_paths" | grep -qxF "$path"; then
+            emit_note rule "$path was created at the same path as a file that was deprecated. Check the deprecated/DEPRECATION_LOG.md entry before bringing it back."
+            continue
+        fi
+
+        # 4. New file duplicating an existing file's name elsewhere
+        if [[ ${#stem} -ge 4 ]] && ! is_common_stem "$stem" \
+           && [[ "$base_name" != *.test.* && "$base_name" != *.spec.* && "$base_name" != *.stories.* ]]; then
+            local twin
+            twin="$(echo "$tracked_stems" | grep -E "(^|/)${stem//./\\.}\.[^/]+$" | grep -vxF "$path" \
+                    | grep -vE '(^|/)deprecated/' | grep -vE '\.(test|spec|stories)\.' | head -1)"
+            if [[ -n "$twin" && "${twin##*.}" == "${base_name##*.}" ]]; then
+                emit_note rule "New file $path has the same name as existing $twin. Is this a duplicate that should extend the existing file instead?"
+            fi
+        fi
+
+        # 5. New top-level directory with ARCHITECTURE.md untouched
+        if [[ "$path" == */* && "$arch_touched" == false ]]; then
+            local top="${path%%/*}"
+            if ! echo "$tracked_stems" | grep -q "^$top/"; then
+                emit_note rule "New top-level directory $top/ is not in ARCHITECTURE.md. Run: necro arch"
+            fi
+        fi
+    done <<< "$name_status"
+
+    # 6. Added lines that reference a deprecated file
+    if [[ -n "$deprecated_paths" ]]; then
+        local added
+        added="$(git diff --no-renames -U0 "$base" "$cur" -- . ':(exclude)deprecated' ':(exclude).necro' \
+                 ':(exclude)ARCHITECTURE.md' ':(exclude)PROJECT_INVENTORY_*' 2>/dev/null \
+                 | grep -E '^\+[^+]')"
+        if [[ -n "$added" ]]; then
+            while IFS= read -r dep; do
+                [[ -z "$dep" ]] && continue
+                local dstem dbase
+                dbase="${dep##*/}"
+                dstem="$(stem_of "$dep")"
+                # The deprecated file still exists at its original path → it was restored; skip
+                [[ -e "$PROJECT_ROOT/$dep" ]] && continue
+                if echo "$added" | grep -qF "$dep"; then
+                    emit_note rule "New code references $dep, which was deprecated (see deprecated/DEPRECATION_LOG.md)."
+                elif [[ ${#dstem} -ge 5 ]] && ! is_common_stem "$dstem" \
+                     && echo "$added" | grep -qE "(/|\"|')${dstem//./\\.}(\.[A-Za-z]+)?[\"']"; then
+                    emit_note rule "New code imports something named '$dbase', and a file with that name was deprecated. Check that it points at the active replacement."
+                fi
+            done <<< "$deprecated_paths"
+        fi
+    fi
+}
+
+#######################################
+# AI side agent
+#######################################
+run_ai() {
+    local base="$1" cur="$2"
+
+    if ! command_exists claude; then
+        log_warning "claude CLI not found; skipping the AI side agent (use --no-ai to silence)"
+        return 0
+    fi
+
+    local stat diff arch known
+    stat="$(git diff --no-renames --stat=120 "$base" "$cur" -- . ':(exclude).necro' 2>/dev/null | tail -40)"
+    diff="$(git diff --no-renames "$base" "$cur" -- . ':(exclude).necro' ':(exclude)deprecated' \
+            ':(exclude)*.lock' ':(exclude)package-lock.json' ':(exclude)PROJECT_INVENTORY_*' 2>/dev/null \
+            | head -c "$MAX_DIFF_BYTES")"
+    [[ -z "$diff" ]] && return 0
+    arch="$(head -200 "$PROJECT_ROOT/ARCHITECTURE.md" 2>/dev/null)"
+    known="$(tail -40 "$NOTES_FILE" 2>/dev/null)"
+
+    local prompt
+    prompt="$(cat <<EOF
+You are the second agent in a pair. Another agent is changing this project right now. You watch
+its diff and tell the human only what they would want to know but might miss. You never see or
+talk to the other agent.
+
+Focus on project hygiene (this project uses Necro):
+- code that duplicates or re-implements something listed as Active in ARCHITECTURE.md
+- new references to deprecated or legacy code, or edits made to the wrong of two similar files
+- files that look like they will become zombies (copies, backups, v2 files left beside v1, scratch files)
+- changes that make ARCHITECTURE.md wrong (new subsystem, moved entry point, removed module)
+- a quiet behaviour change hidden inside what looks like a refactor
+Do NOT comment on style, naming, formatting, test coverage, or anything you are unsure of.
+
+Reply with at most 3 lines. Each line starts with "- " and is one plain sentence naming the
+file. If nothing clears the bar, reply with exactly: NOTHING
+
+Already reported (never repeat these, even reworded):
+${known:-none}
+
+=== ARCHITECTURE.md (first 200 lines) ===
+${arch:-missing}
+
+=== diff --stat since the watch started ===
+$stat
+
+=== diff (truncated to ${MAX_DIFF_BYTES} bytes) ===
+$diff
+EOF
+)"
+
+    local reply
+    reply="$(cd "$WATCH_DIR" && printf '%s' "$prompt" | claude -p --model "$MODEL" --tools "" \
+              --no-session-persistence --setting-sources "" --max-budget-usd 0.10 2>/dev/null)"
+    [[ -n "$NECRO_WATCH_DEBUG" ]] && echo -e "${PURPLE}[side agent raw]${NC}\n${reply:-<empty>}" >&2
+    [[ -z "$reply" ]] && return 0
+    echo "$reply" | grep -qx 'NOTHING' && return 0
+
+    while IFS= read -r line; do
+        line="${line#- }"
+        [[ -z "${line// /}" || "$line" == "NOTHING" ]] && continue
+        emit_note ai "$line"
+    done <<< "$(echo "$reply" | grep -E '^- ' | head -3)"
+}
+
+#######################################
+# One check
+#######################################
+tick() {
+    local cur
+    cur="$(snapshot_tree)"
+    if [[ -z "$cur" ]]; then
+        log_error "Could not snapshot the working tree"
+        return 1
+    fi
+    [[ "$cur" == "$(cat "$LAST_FILE" 2>/dev/null)" ]] && return 0
+    echo "$cur" > "$LAST_FILE"
+
+    local base
+    base="$(cat "$BASE_FILE")"
+    [[ "$cur" == "$base" ]] && return 0
+
+    NEW_NOTES=0
+    run_rules "$base" "$cur"
+    [[ "$USE_AI" == true ]] && run_ai "$base" "$cur"
+    if [[ "$ONCE" == true && $NEW_NOTES -eq 0 ]]; then
+        log_success "Nothing new worth knowing"
+    fi
+}
+
+main() {
+    local tail_n=""
+    local reset=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interval) INTERVAL="$2"; shift 2 ;;
+            --once) ONCE=true; shift ;;
+            --since) SINCE="$2"; shift 2 ;;
+            --no-ai) USE_AI=false; shift ;;
+            --model) MODEL="$2"; shift 2 ;;
+            --notify) NOTIFY=true; shift ;;
+            --reset) reset=true; shift ;;
+            --tail)
+                if [[ "$2" =~ ^[0-9]+$ ]]; then tail_n="$2"; shift 2; else tail_n=20; shift; fi ;;
+            --help|-h) show_usage; exit 0 ;;
+            *) log_error "Unknown option: $1"; echo ""; show_usage; exit 1 ;;
+        esac
+    done
+
+    PROJECT_ROOT="$(get_project_root)"
+    cd "$PROJECT_ROOT" || exit 1
+
+    if [[ ! -d .necro ]]; then
+        log_error "Necro is not initialized here. Run: necro init"
+        exit 1
+    fi
+    if ! is_git_repo; then
+        log_error "necro watch needs a git repository"
+        exit 1
+    fi
+
+    WATCH_DIR="$PROJECT_ROOT/.necro/watch"
+    ensure_dir "$WATCH_DIR"
+    [[ -f "$WATCH_DIR/.gitignore" ]] || echo "*" > "$WATCH_DIR/.gitignore"
+    WATCH_INDEX="$WATCH_DIR/index"
+    BASE_FILE="$WATCH_DIR/baseline"
+    LAST_FILE="$WATCH_DIR/last"
+    KNOWN_FILE="$WATCH_DIR/known"
+    NOTES_FILE="$WATCH_DIR/notes.md"
+
+    if [[ -n "$tail_n" ]]; then
+        if [[ -s "$NOTES_FILE" ]]; then tail -n "$tail_n" "$NOTES_FILE"; else log_info "No notes yet"; fi
+        exit 0
+    fi
+    if [[ "$reset" == true ]]; then
+        rm -f "$WATCH_INDEX" "$BASE_FILE" "$LAST_FILE" "$KNOWN_FILE"
+        log_success "Watch baseline and reported-notes memory cleared (notes.md kept)"
+        exit 0
+    fi
+
+    # Seed the private index from the real one so the first snapshot is fast
+    if [[ ! -f "$WATCH_INDEX" ]]; then
+        cp "$(git rev-parse --git-path index)" "$WATCH_INDEX" 2>/dev/null || true
+    fi
+
+    if [[ -n "$SINCE" ]]; then
+        local ref_tree
+        ref_tree="$(git rev-parse "$SINCE^{tree}" 2>/dev/null)"
+        if [[ -z "$ref_tree" ]]; then
+            log_error "Unknown ref: $SINCE"
+            exit 1
+        fi
+        echo "$ref_tree" > "$BASE_FILE"
+        rm -f "$LAST_FILE"
+    elif [[ "$ONCE" == false || ! -f "$BASE_FILE" ]]; then
+        # A fresh watch session judges only what changes from now on
+        snapshot_tree > "$BASE_FILE"
+        cp "$BASE_FILE" "$LAST_FILE"
+    fi
+
+    if [[ ! -f "$NOTES_FILE" ]]; then
+        echo "# Necro watch notes" > "$NOTES_FILE"
+        echo "" >> "$NOTES_FILE"
+    fi
+
+    if [[ "$ONCE" == true ]]; then
+        rm -f "$LAST_FILE"
+        tick
+        exit 0
+    fi
+
+    print_banner "NECRO WATCH - by the way, you should know"
+    echo -e "${BLUE}Project:${NC}  $PROJECT_ROOT"
+    echo -e "${BLUE}Baseline:${NC} $(cut -c1-12 "$BASE_FILE")  (changes before now are ignored)"
+    echo -e "${BLUE}Checks:${NC}   every ${INTERVAL}s · rules$([[ "$USE_AI" == true ]] && echo " + $MODEL side agent")"
+    echo -e "${BLUE}Notes:${NC}    .necro/watch/notes.md"
+    echo -e "Ctrl-C to stop."
+    echo ""
+
+    trap 'echo ""; log_info "Watch stopped. Notes kept in .necro/watch/notes.md"; exit 0' INT TERM
+    while true; do
+        tick
+        sleep "$INTERVAL"
+    done
+}
+
+main "$@"

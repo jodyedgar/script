@@ -287,6 +287,38 @@ necro test [options]
 **Options**:
 - `--help` - Show help message
 
+### necro watch
+
+A second agent that watches the working agent's changes and reports what you should know,
+like Claude Code's built-in "You Should Know" plugin but aimed at Necro problems. Run it in
+a second terminal while Claude Code works.
+
+```bash
+necro watch                       # watch from now; check every 90s
+necro watch --once --since main   # one-shot review of a whole branch
+necro watch --tail                # show the last 20 notes
+```
+
+Each tick snapshots the working tree (tracked and untracked files, `.gitignore` respected)
+into a private index under `.necro/watch/`, so it never touches your staging area. It then
+diffs that snapshot against the baseline.
+
+- **Rules** (free, always on): edits inside `deprecated/`, new code referencing a deprecated
+  file, new files matching `suspicious_patterns`, a recreated deprecated file, a new file
+  sharing an existing file's name, a new top-level directory with ARCHITECTURE.md unchanged.
+- **Side agent**: `claude -p` (Sonnet by default, no tools, no hooks, $0.10 cap per call)
+  reads ARCHITECTURE.md and the diff, and names up to 3 things worth knowing: duplicated
+  Active code, zombies in the making, ARCHITECTURE.md drift, quiet behaviour changes.
+  It only runs when the tree has changed since the last tick.
+
+Notes are appended to `.necro/watch/notes.md` and never repeated. The Necro skill tells
+Claude to read them before committing. `necro init` also enables
+`cc-plugin-you-should-know@builtin` (user-wide; skip with `--skip-you-should-know`).
+
+**Options**: `--interval N`, `--once`, `--since REF`, `--no-ai`, `--model NAME`,
+`--notify` (macOS notification), `--reset`, `--tail [N]`, `--help`.
+Set `NECRO_WATCH_DEBUG=1` to print the side agent's raw reply.
+
 ## Workflow Examples
 
 ### Daily Development
