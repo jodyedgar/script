@@ -24,7 +24,7 @@ Collection: **`tickets`** — auto-ID documents. Source of truth is the Bucky re
 (`functions/src/types/collections.ts` `TicketDoc`, `functions/src/services/dataService.ts` `createTicket`).
 
 Key fields: `displayId` ("TICK-N"), `ticketNumber` (int), `name` (title),
-`status` (default `"Backlog"`), `content` (plain-text body), `projectId` +
+`status` (default `"Scoping"`), `content` (plain-text body), `projectId` +
 denormalized `projectName`, `clientId` + `clientName`, `shopifyStoreId` +
 `shopifyStoreUrl`, `pageUrl`, `rushOrder`, `screenshots[]`, `qaBefore[]`,
 `qaAfter[]`, `attachments[]`, `source`, `createdAt`/`updatedAt`.
@@ -33,8 +33,9 @@ denormalized `projectName`, `clientId` + `clientName`, `shopifyStoreId` +
 - **TICK-N is minted ONLY by the `enforceTicketNumber` onCreate trigger** from
   `counters/tickets`. When creating a ticket, OMIT `ticketNumber`/`displayId`
   and let the trigger assign them — never compute max+1 or set them manually.
-- Status `"In Queue"` fires a client QA-questionnaire email; `"Client Approval"`
-  fires a client approval email. `"Backlog"` is silent. Default new tickets to Backlog.
+- Status `"In Queue"` fires a client QA-questionnaire email; `"Client Review"`
+  fires the client review email (finished work). `"Scoping"` is silent. Default new tickets to Scoping.
+  Old names (Backlog, In Review, Client Approval, AI Review) are mapped by ticket.sh; unknown statuses are rejected.
 
 **Resolution collections:**
 - `clients` — `name` (often company name or "#channel"), `companyName`, `slackChannels[]`

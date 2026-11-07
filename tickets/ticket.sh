@@ -34,7 +34,7 @@
 #                                which triggers: Gemini transcript -> Jody-voice audio ->
 #                                GIF+audio MP4 with captions. Review & approve in the
 #                                Job Reports admin screen (approve moves it to In Review —
-#                                do NOT pass --status "In Review" alongside; it is deferred).
+#                                do NOT pass --status "Internal Review" alongside; it is deferred).
 #   --video FILE_OR_URL          PREFERRED with --job-report. Smooth walkthrough MP4/WebM
 #                                (record with jobreport.sh — Browserless cloud recording of
 #                                the Shopify admin + storefront). Local files upload to
@@ -55,7 +55,7 @@
 #   ./ticket.sh TICK-1234
 #
 #   # Complete ticket with QA screenshots
-#   ./ticket.sh TICK-1234 --status "In Review" --qa-before --qa-after --summary "Fixed the issue"
+#   ./ticket.sh TICK-1234 --status "Internal Review" --qa-before --qa-after --summary "Fixed the issue"
 #
 #   # Senior-dev cycle pickup: submit for an AI video job report
 #   ./ticket.sh TICK-1234 --job-report --gif ~/Desktop/fix-demo.gif \
@@ -495,11 +495,43 @@ create_usage() {
 }
 
 # ============================================================
+# TICKET STATUS VOCABULARY (2026-11 refactor; mirrors
+# functions/src/tickets/status.ts in the Bucky repo)
+# ============================================================
+CANONICAL_STATUSES=("AI Capture" "Deferred" "Scoping" "Blocked" "Changes Requested" "Needs Clarification" "Awaiting Approval" "In Queue" "In Progress" "Internal Review" "Client Review" "Sunset" "Parked" "Complete" "Cancelled" "Archived")
+
+# Legacy name → canonical name (unknown values pass through unchanged).
+normalize_status() {
+    case "$1" in
+        "AI Review"|"Needs Triage") echo "AI Capture" ;;
+        "Backlog"|"To Do"|"open"|"Open"|"New") echo "Scoping" ;;
+        "In Review") echo "Internal Review" ;;
+        "Client Approval") echo "Client Review" ;;
+        "Need Clarification") echo "Needs Clarification" ;;
+        "Merged (Archived)"|"Merged Away"|"Merged") echo "Archived" ;;
+        "Done"|"Completed"|"Closed") echo "Complete" ;;
+        "Canceled") echo "Cancelled" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Normalize and validate a --status value; exits on an unknown status.
+canonical_status_or_die() {
+    local s; s=$(normalize_status "$1")
+    local c
+    for c in "${CANONICAL_STATUSES[@]}"; do
+        [ "$c" = "$s" ] && { echo "$s"; return 0; }
+    done
+    echo "Unknown status: '$1'. Valid: ${CANONICAL_STATUSES[*]}" >&2
+    exit 1
+}
+
+# ============================================================
 # CREATE MODE
 # ============================================================
 run_create_mode() {
     local NAME="" CHANNEL="" DESCRIPTION="" DESCRIPTION_FILE=""
-    local STATUS="Backlog" PROJECT_ID_OVERRIDE="" CLIENT_ID_OVERRIDE="" PAGE_URL="" RUSH=false DRY_RUN=false
+    local STATUS="Scoping" PROJECT_ID_OVERRIDE="" CLIENT_ID_OVERRIDE="" PAGE_URL="" RUSH=false DRY_RUN=false
     local ATTACHMENTS=()
 
     while [[ $# -gt 0 ]]; do
@@ -523,6 +555,7 @@ run_create_mode() {
     # Validate required
     [ -z "$CHANNEL" ] && [ -z "$CLIENT_ID_OVERRIDE" ] && echo -e "${RED}Error: --channel (or --client-id) is required${NC}" && create_usage
     [ -z "$NAME" ] && echo -e "${RED}Error: --name is required${NC}" && create_usage
+    STATUS=$(canonical_status_or_die "$STATUS") || exit 1
 
     # Build content (description text + optional file)
     local CONTENT="$DESCRIPTION"
@@ -933,7 +966,14 @@ if [ "$FETCH_ONLY" = true ]; then
     list_project_assets "$TICKET_ID"
 
     # Update status to "In Progress" if appropriate
-    if [[ "$CURRENT_STATUS" != "Done" && "$CURRENT_STATUS" != "Complete" && "$CURRENT_STATUS" != "In Progress" ]]; then
+    # Only pick up work that hasn't reached review or closed. (Before the 2026-11
+    # refactor this moved Archived, Cancelled and Client Approval tickets back to
+    # In Progress just by fetching them.)
+    case "$(normalize_status "$CURRENT_STATUS")" in
+        "Complete"|"Archived"|"Cancelled"|"Sunset"|"Client Review"|"Internal Review"|"In Progress"|"Parked") SKIP_PICKUP=true ;;
+        *) SKIP_PICKUP=false ;;
+    esac
+    if [[ "$SKIP_PICKUP" = false ]]; then
         echo ""
         echo "Updating status to 'In Progress'..."
 
@@ -1005,10 +1045,14 @@ UPDATE_ARGS=()
 HAS_UPDATES=false
 
 # --job-report owns the hand-off to QA: approving the report in the Job Reports
-# screen is what sets "In Review". Setting it here too would drop the ticket
+# screen is what sets "Internal Review". Setting it here too would drop the ticket
 # into the admin QA queue while the report is still a draft, so defer it.
-if [ "$JOB_REPORT" = true ] && [ "$NEW_STATUS" = "In Review" ]; then
-    echo -e "${BLUE}--status 'In Review' deferred: approving the job report moves the ticket to In Review${NC}"
+if [ -n "$NEW_STATUS" ]; then
+    NEW_STATUS=$(canonical_status_or_die "$NEW_STATUS") || exit 1
+fi
+
+if [ "$JOB_REPORT" = true ] && [ "$NEW_STATUS" = "Internal Review" ]; then
+    echo -e "${BLUE}--status 'Internal Review' deferred: approving the job report moves the ticket to Internal Review${NC}"
     NEW_STATUS=""
 fi
 
