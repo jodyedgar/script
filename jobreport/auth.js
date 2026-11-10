@@ -38,22 +38,30 @@ async function main() {
   console.log(`\nLog into the Shopify admin for "${handle}" in the Chrome window that just opened.`);
   console.log("Waiting for the admin to load (up to 5 minutes)...");
 
+  // A renamed store keeps its permanent myshopify handle, but the admin now
+  // lives under the new one: /store/figmate-internal-store redirects to
+  // /store/internal-sales-fieldmarketing. So accept the requested handle OR a
+  // handle the requested admin URL resolves to while logged in.
   const deadline = Date.now() + LOGIN_WAIT_MS;
-  let loggedIn = false;
+  let adminHandle = null;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
     try {
-      const url = page.url();
-      // Logged in == we are on admin.shopify.com/store/<handle> and not on an
-      // accounts/login interstitial.
-      if (url.startsWith(`https://admin.shopify.com/store/${handle}`) &&
-          await page.$("#AppFrameNav, nav")) {
-        loggedIn = true;
+      const landed = adminStoreHandle(page.url());
+      if (!landed || !await page.$("#AppFrameNav, nav")) continue;
+      if (landed === handle.toLowerCase()) { adminHandle = handle; break; }
+      // Different store in the URL: confirm it IS this store by re-opening the
+      // requested admin URL. Shopify only lands there again if it is a redirect.
+      await page.goto(adminUrl, {waitUntil: "domcontentloaded"});
+      await new Promise((r) => setTimeout(r, 2500));
+      if (adminStoreHandle(page.url()) === landed) {
+        console.log(`"${handle}" resolves to the renamed admin store "${landed}" (same store).`);
+        adminHandle = landed;
         break;
       }
     } catch { /* page navigating; retry */ }
   }
-  if (!loggedIn) {
+  if (!adminHandle) {
     console.error("Timed out waiting for an authenticated admin session.");
     await browser.close();
     process.exit(1);
@@ -65,15 +73,22 @@ async function main() {
   const wanted = cookies.filter((c) =>
     COOKIE_DOMAINS.some((d) => c.domain === d || c.domain.endsWith(d)));
 
-  const out = cookieFile(handle);
-  fs.writeFileSync(out, JSON.stringify({
-    store: handle,
-    savedAt: new Date().toISOString(),
-    cookies: wanted,
-  }, null, 2), {mode: 0o600});
-  console.log(`Saved ${wanted.length} Shopify cookies -> ${out}`);
+  // Save under the requested handle (what Bucky tickets and Cody's preflight
+  // look up) and, for a renamed store, under the admin handle too.
+  const handles = adminHandle === handle ? [handle] : [handle, adminHandle];
+  const outs = handles.map((h) => {
+    const out = cookieFile(h);
+    fs.writeFileSync(out, JSON.stringify({
+      store: h,
+      adminHandle,
+      savedAt: new Date().toISOString(),
+      cookies: wanted,
+    }, null, 2), {mode: 0o600});
+    console.log(`Saved ${wanted.length} Shopify cookies -> ${out}`);
+    return out;
+  });
   await browser.close();
-  pushJarToCody(out);
+  outs.forEach(pushJarToCody);
   // Marker for Bucky's Client Setup audit + bucky-qa: when was an admin session
   // last saved for this store (cookies themselves never leave this machine).
   try {
@@ -85,6 +100,7 @@ async function main() {
       savedAt: {timestampValue: new Date().toISOString()},
       host: {stringValue: os.hostname()},
       cookieCount: {integerValue: String(wanted.length)},
+      adminHandle: {stringValue: adminHandle},
     }}}}});
     const res = await fetch(doc, {method: "PATCH", headers: {Authorization: `Bearer ${token}`, "Content-Type": "application/json"}, body});
     console.log(res.ok ? `Recorded jobReportAuth.savedAt on shops/${handle}.myshopify.com` : `(marker write skipped: HTTP ${res.status})`);
@@ -113,6 +129,12 @@ function pushJarToCody(file) {
     console.log(`!! Could NOT push ${path.basename(file)} to cody (${host}): ${why}`);
     console.log(`   Cody's preflight will keep holding this store. Retry: scp -p ${file} ${host}:${dir}/`);
   }
+}
+
+// "https://admin.shopify.com/store/<handle>/..." -> "<handle>", else null.
+function adminStoreHandle(url) {
+  const m = /^https:\/\/admin\.shopify\.com\/store\/([a-z0-9][a-z0-9-]*)(?:[/?#]|$)/i.exec(url);
+  return m ? m[1].toLowerCase() : null;
 }
 
 main().catch((err) => { console.error("auth failed:", err.message); process.exit(1); });
